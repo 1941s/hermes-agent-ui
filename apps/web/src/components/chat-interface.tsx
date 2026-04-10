@@ -2,15 +2,19 @@
 
 import { UI_TEXT } from "@hermes-ui/config/ui-text";
 import { AnimatePresence, motion } from "framer-motion";
+import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 
 import { ArtifactsPreview } from "@/components/artifacts-preview";
-import { DiagnosticsDrawer } from "@/components/diagnostics-drawer";
 import { ReasoningTrace } from "@/components/reasoning-trace";
 import { useAgent } from "@/hooks/use-agent";
 import { useUiStore } from "@/stores/ui-store";
 
 const WS_URL = process.env.NEXT_PUBLIC_AGENT_WS_URL ?? "ws://localhost:8000/ws/agent";
+const DiagnosticsDrawer = dynamic(
+  () => import("@/components/diagnostics-drawer").then((m) => m.DiagnosticsDrawer),
+  { ssr: false },
+);
 const DEMO_PROMPTS = [
   {
     id: "doc-summary",

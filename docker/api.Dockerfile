@@ -1,9 +1,14 @@
-FROM python:3.11-slim AS runner
+﻿ARG PYTHON_IMAGE=python:3.11-slim
+FROM ${PYTHON_IMAGE} AS runner
 
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+    && apt-get install -y --fix-missing --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY apps/api/requirements.txt /tmp/requirements.txt
 RUN python -m pip install --upgrade pip && pip install --no-cache-dir -r /tmp/requirements.txt

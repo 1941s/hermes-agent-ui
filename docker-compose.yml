@@ -10,6 +10,8 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
     container_name: hermes-api-demo
     environment:
       HERMES_UI_DB_PATH: /tmp/runtime.db
@@ -40,6 +42,8 @@ services:
       context: .
       dockerfile: docker/web.Dockerfile
       args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
         NEXT_PUBLIC_AGENT_WS_URL: ${NEXT_PUBLIC_AGENT_WS_URL:-ws://localhost:8000/ws/agent}
         NEXT_PUBLIC_AGENT_AUTH_TOKEN: ${NEXT_PUBLIC_AGENT_AUTH_TOKEN:-}
     container_name: hermes-web-demo
@@ -98,6 +102,8 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
     container_name: hermes-api-prod
     environment:
       HERMES_UI_DB_PATH: /tmp/runtime.db
@@ -135,6 +141,8 @@ services:
       context: .
       dockerfile: docker/web.Dockerfile
       args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
         NEXT_PUBLIC_AGENT_WS_URL: ${NEXT_PUBLIC_AGENT_WS_URL:-ws://localhost:8000/ws/agent}
         NEXT_PUBLIC_AGENT_AUTH_TOKEN: ${NEXT_PUBLIC_AGENT_AUTH_TOKEN:-}
     container_name: hermes-web-prod
@@ -163,3 +171,8 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+
+
+
+
+

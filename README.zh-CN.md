@@ -232,6 +232,17 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 按需复制 `apps/api/.env.example` → `.env`。
 
+### Hermes 安装源与依赖对齐
+
+- `hermes-agent` 通过官方 GitHub 源安装，而不是固定 PyPI 版本号：
+  - `hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git`
+- 原因：部分日期型版本号（如 `2026.4.8`）在公开索引中可能不存在，会导致 Docker 构建失败。
+- 当前需与 Hermes 依赖下限保持一致：
+  - `python-dotenv==1.2.1`
+  - `pydantic==2.12.5`
+  - `PyJWT==2.12.0`
+- `docker/api.Dockerfile` 已安装 `git`，因为 `pip install -r requirements.txt` 解析 VCS 依赖时必须使用它。
+
 ### 回放持久化
 
 - 默认路径：`apps/api/runtime.db`（本地开发）；用 **`HERMES_UI_DB_PATH`** 覆盖。

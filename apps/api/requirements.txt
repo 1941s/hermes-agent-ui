@@ -1,8 +1,8 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
-pydantic==2.11.7
-python-dotenv==1.1.1
-hermes-agent==2026.4.8
+pydantic==2.12.5
+python-dotenv==1.2.1
+hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git
 jinja2==3.1.6
 pytest==8.3.5
-PyJWT==2.9.0
+PyJWT==2.12.0
