@@ -1,0 +1,9 @@
+{
+  "name": "@hermes-ui/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./ui-text": "./src/ui-text.ts"
+  }
+}

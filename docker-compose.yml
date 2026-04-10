@@ -1,0 +1,165 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  api-demo:
+    profiles: ["demo"]
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: hermes-api-demo
+    environment:
+      HERMES_UI_DB_PATH: /tmp/runtime.db
+      HERMES_UI_AUTH_ENABLED: "0"
+      HERMES_UI_JWT_SECRET: ${HERMES_UI_JWT_SECRET:-replace-me}
+      HERMES_UI_JWT_ISSUER: ${HERMES_UI_JWT_ISSUER:-hermes-ui}
+      HERMES_UI_JWT_AUDIENCE: ${HERMES_UI_JWT_AUDIENCE:-hermes-web}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-stub-openai-key}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-stub-anthropic-key}
+      HERMES_PROVIDER: ${HERMES_PROVIDER:-openai}
+      HERMES_MODEL: ${HERMES_MODEL:-gpt-4o-mini}
+      HERMES_UI_SKIP_AGENT_BOOT: ${HERMES_UI_SKIP_AGENT_BOOT:-0}
+    ports:
+      - "8000:8000"
+    networks:
+      - public
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    logging: *default-logging
+
+  web-demo:
+    profiles: ["demo"]
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_AGENT_WS_URL: ${NEXT_PUBLIC_AGENT_WS_URL:-ws://localhost:8000/ws/agent}
+        NEXT_PUBLIC_AGENT_AUTH_TOKEN: ${NEXT_PUBLIC_AGENT_AUTH_TOKEN:-}
+    container_name: hermes-web-demo
+    depends_on:
+      api-demo:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    networks:
+      - public
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    logging: *default-logging
+
+  postgres:
+    profiles: ["prod"]
+    image: postgres:16-alpine
+    container_name: hermes-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hermes}
+      POSTGRES_USER: ${POSTGRES_USER:-hermes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hermes} -d ${POSTGRES_DB:-hermes}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+
+  redis:
+    profiles: ["prod"]
+    image: redis:7-alpine
+    container_name: hermes-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging: *default-logging
+
+  api-prod:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: hermes-api-prod
+    environment:
+      HERMES_UI_DB_PATH: /tmp/runtime.db
+      HERMES_UI_AUTH_ENABLED: "1"
+      HERMES_UI_JWT_SECRET: ${HERMES_UI_JWT_SECRET:-replace-me}
+      HERMES_UI_JWT_ISSUER: ${HERMES_UI_JWT_ISSUER:-hermes-ui}
+      HERMES_UI_JWT_AUDIENCE: ${HERMES_UI_JWT_AUDIENCE:-hermes-web}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-stub-openai-key}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-stub-anthropic-key}
+      HERMES_PROVIDER: ${HERMES_PROVIDER:-openai}
+      HERMES_MODEL: ${HERMES_MODEL:-gpt-4o-mini}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://hermes:change-me@postgres:5432/hermes}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    networks:
+      - public
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)\""]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    logging: *default-logging
+
+  web-prod:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_AGENT_WS_URL: ${NEXT_PUBLIC_AGENT_WS_URL:-ws://localhost:8000/ws/agent}
+        NEXT_PUBLIC_AGENT_AUTH_TOKEN: ${NEXT_PUBLIC_AGENT_AUTH_TOKEN:-}
+    container_name: hermes-web-prod
+    depends_on:
+      api-prod:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    networks:
+      - public
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    logging: *default-logging
+
+networks:
+  public:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:

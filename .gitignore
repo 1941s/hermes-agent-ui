@@ -1,0 +1,10 @@
+node_modules
+.pnpm-store
+.next
+dist
+build
+.env
+.env.local
+.venv
+__pycache__
+*.pyc

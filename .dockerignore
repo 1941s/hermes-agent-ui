@@ -1,0 +1,15 @@
+node_modules
+.pnpm-store
+.git
+.next
+dist
+build
+coverage
+perf-reports
+apps/api/.venv
+apps/api/__pycache__
+apps/api/*.pyc
+**/__pycache__
+**/*.pyc
+.env
+.env.local

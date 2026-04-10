@@ -1,0 +1,14 @@
+{
+  "name": "hermes-agent-ui",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "build:web": "pnpm --filter web build",
+    "lint:web": "pnpm --filter web lint",
+    "typecheck:web": "pnpm --filter web typecheck",
+    "perf:baseline": "node scripts/perf-baseline.mjs",
+    "demo:golden": "node scripts/demo-golden.mjs"
+  }
+}

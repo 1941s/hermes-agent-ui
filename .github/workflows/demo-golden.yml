@@ -1,0 +1,85 @@
+name: Golden Demo
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  demo-golden:
+    if: ${{ secrets.OPENAI_API_KEY != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install API dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/api/requirements.txt
+
+      - name: Start API
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HERMES_UI_JWT_SECRET: ${{ secrets.HERMES_DEMO_JWT_SECRET || 'replace-me-ci-secret' }}
+          HERMES_UI_JWT_ISSUER: hermes-ui
+          HERMES_UI_JWT_AUDIENCE: hermes-web
+          HERMES_MODEL: gpt-4o-mini
+        run: |
+          nohup python -m uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 >/tmp/api.log 2>&1 &
+          sleep 5
+
+      - name: Generate demo auth token
+        id: demo_token
+        env:
+          HERMES_UI_JWT_SECRET: ${{ secrets.HERMES_DEMO_JWT_SECRET || 'replace-me-ci-secret' }}
+        run: |
+          TOKEN=$(python - <<'PY'
+          import jwt, time, os
+          payload = {
+              "sub": "ci-demo-user",
+              "iat": int(time.time()),
+              "exp": int(time.time()) + 3600,
+              "iss": "hermes-ui",
+              "aud": "hermes-web",
+              "scope": "benchmark:run admin:stats:read",
+          }
+          print(jwt.encode(payload, os.getenv("HERMES_UI_JWT_SECRET", "replace-me-ci-secret"), algorithm="HS256"))
+          PY
+          )
+          echo "value=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Run golden demo
+        env:
+          HERMES_DEMO_AUTH_TOKEN: ${{ steps.demo_token.outputs.value }}
+          HERMES_DEMO_WS_URL: ws://localhost:8000/ws/agent
+          HERMES_DEMO_TIMEOUT_MS: "60000"
+        run: pnpm demo:golden
+
+      - name: Upload demo artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-demo-artifacts
+          path: |
+            perf-reports/*.json
+            /tmp/api.log
