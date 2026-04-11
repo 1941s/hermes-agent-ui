@@ -1,26 +1,123 @@
 @import "tailwindcss";
 
+/* Design tokens: Cursor (layout) + ChatGPT (composer) + Claude (readable, calm) */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg-base: #0c0c0e;
+  --bg-canvas: #0a0a0b;
+  --bg-elevated: rgba(16, 16, 18, 0.92);
+  --bg-sidebar: #0f0f12;
+  --bg-panel: rgba(18, 18, 22, 0.92);
+  --bg-composer: rgba(10, 10, 12, 0.65);
+  --bg-input-shell: rgba(24, 24, 28, 0.85);
+  --border-hairline: rgba(255, 255, 255, 0.06);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --accent: #a1a1aa;
+  --accent-focus: rgba(161, 161, 170, 0.35);
+  --foreground: #e4e4e7;
+  --foreground-muted: #a1a1aa;
+  --muted: #71717a;
+  --ring: rgba(212, 212, 216, 0.25);
+  --prose-body: #d4d4d8;
 }
 
 @theme inline {
-  --color-background: var(--background);
+  --color-background: var(--bg-base);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-app-sans);
   --font-mono: var(--font-app-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+body {
+  background-color: var(--bg-base);
+  color: var(--foreground);
+  font-feature-settings: "rlig" 1, "calt" 1;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Scrollbars: thin, low-contrast thumb (ChatGPT / VS Code–adjacent dark UI) */
+html {
+  scrollbar-gutter: stable;
+}
+
+*,
+*::before,
+*::after {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.hermes-scrollbar {
+  scrollbar-gutter: stable;
+}
+
+/* Very subtle vignette — no loud purple/cyan (Claude-like restraint) */
+.hermes-grid::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse 100% 80% at 50% -20%, rgba(255, 255, 255, 0.03), transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Panel: IDE-adjacent — flat, hairline border (Cursor-like) */
+.hermes-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+}
+
+/* ChatGPT-style composer shell */
+.hermes-composer-shell {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input-shell);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.hermes-composer-shell:focus-within {
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* Claude-like reading width for assistant output */
+.hermes-prose-chat {
+  font-size: 0.9375rem;
+  line-height: 1.75;
+  letter-spacing: 0.01em;
+  color: var(--prose-body);
+}
+
+.hermes-input {
+  background: transparent;
+  border: none;
+  transition: color 0.15s ease;
+}
+
+.hermes-input:focus {
+  outline: none;
 }

@@ -1,8 +1,9 @@
 "use client";
 
-import { UI_TEXT } from "@hermes-ui/config/ui-text";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+
+import { useTranslations } from "@/hooks/use-translations";
 
 type ReplayStats = {
   runtime_counters?: {
@@ -21,6 +22,7 @@ type ReplayStats = {
 };
 
 export function DiagnosticsDrawer() {
+  const { t } = useTranslations();
   const [fps, setFps] = useState<number>(0);
   const [droppedFrames, setDroppedFrames] = useState<number>(0);
   const [fpsAvg60, setFpsAvg60] = useState<number>(0);
@@ -79,34 +81,34 @@ export function DiagnosticsDrawer() {
   });
 
   return (
-    <div className="rounded border bg-zinc-950/50 p-2 text-xs text-zinc-300">
+    <div className="rounded-lg border border-[var(--border-hairline)] bg-black/20 px-3 py-2.5 text-[11px] text-zinc-400">
       <div className="mb-2 flex items-center justify-between">
-        <span className="font-medium">{UI_TEXT.labels.diagnostics}</span>
-        <span className="text-zinc-500">{isFetching ? "refreshing..." : "live"}</span>
+        <span className="font-medium text-zinc-300">{t.labels.diagnostics}</span>
+        <span className="text-zinc-600">{isFetching ? t.labels.refreshing : t.labels.live}</span>
       </div>
-      <div className="grid grid-cols-2 gap-1">
-        <span>{UI_TEXT.labels.replayHits}</span>
-        <span>{data?.runtime_counters?.replay_hits ?? 0}</span>
-        <span>{UI_TEXT.labels.replayMisses}</span>
-        <span>{data?.runtime_counters?.replay_misses ?? 0}</span>
-        <span>{UI_TEXT.labels.artifactTruncated}</span>
-        <span>{data?.runtime_counters?.artifact_truncated ?? 0}</span>
-        <span>{UI_TEXT.labels.fps}</span>
-        <span>{fps}</span>
-        <span>{UI_TEXT.labels.droppedFrames}</span>
-        <span>{droppedFrames}</span>
-        <span>fps_avg_60s</span>
-        <span>{fpsAvg60}</span>
-        <span>dropped_avg_60s</span>
-        <span>{dropAvg60}</span>
-        <span>benchmark_sessions</span>
-        <span>{data?.runtime_counters?.benchmark_sessions ?? 0}</span>
-        <span>total_frames</span>
-        <span>{data?.total_frames ?? 0}</span>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px]">
+        <span>{t.labels.replayHits}</span>
+        <span className="text-right text-zinc-300">{data?.runtime_counters?.replay_hits ?? 0}</span>
+        <span>{t.labels.replayMisses}</span>
+        <span className="text-right text-zinc-300">{data?.runtime_counters?.replay_misses ?? 0}</span>
+        <span>{t.labels.artifactTruncated}</span>
+        <span className="text-right text-zinc-300">{data?.runtime_counters?.artifact_truncated ?? 0}</span>
+        <span>{t.labels.fps}</span>
+        <span className="text-right text-zinc-300">{fps}</span>
+        <span>{t.labels.droppedFrames}</span>
+        <span className="text-right text-zinc-300">{droppedFrames}</span>
+        <span>{t.labels.fpsAvg60}</span>
+        <span className="text-right text-zinc-300">{fpsAvg60}</span>
+        <span>{t.labels.droppedAvg60}</span>
+        <span className="text-right text-zinc-300">{dropAvg60}</span>
+        <span>{t.labels.benchmarkSessions}</span>
+        <span className="text-right text-zinc-300">{data?.runtime_counters?.benchmark_sessions ?? 0}</span>
+        <span>{t.labels.totalFrames}</span>
+        <span className="text-right text-zinc-300">{data?.total_frames ?? 0}</span>
       </div>
-      <div className="mt-2 max-h-24 overflow-auto rounded border border-zinc-800 p-1 text-[11px]">
+      <div className="mt-2 max-h-24 overflow-auto rounded-lg border border-white/[0.06] p-1.5 text-[10px] font-mono">
         {(data?.top_sessions ?? []).map((s) => (
-          <div key={s.session_id} className="truncate">
+          <div key={s.session_id} className="truncate text-zinc-500">
             {s.session_id} · {s.frame_count}
           </div>
         ))}

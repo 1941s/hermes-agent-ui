@@ -1,46 +1,36 @@
 "use client";
 
-import { UI_TEXT } from "@hermes-ui/config/ui-text";
 import { AnimatePresence, motion } from "framer-motion";
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
+import { Activity, ArrowDown, ArrowUp, LayoutGrid, MessageSquare, PanelRight, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArtifactsPreview } from "@/components/artifacts-preview";
 import { ReasoningTrace } from "@/components/reasoning-trace";
 import { useAgent } from "@/hooks/use-agent";
-import { useUiStore } from "@/stores/ui-store";
+import { useTranslations } from "@/hooks/use-translations";
 
 const WS_URL = process.env.NEXT_PUBLIC_AGENT_WS_URL ?? "ws://localhost:8000/ws/agent";
 const DiagnosticsDrawer = dynamic(
   () => import("@/components/diagnostics-drawer").then((m) => m.DiagnosticsDrawer),
   { ssr: false },
 );
-const DEMO_PROMPTS = [
-  {
-    id: "doc-summary",
-    label: "Summarize API contract",
-    prompt:
-      "Read the backend websocket protocol and summarize it in 5 bullet points, then provide one JSON artifact that captures the frame taxonomy.",
-  },
-  {
-    id: "code-explain",
-    label: "Explain reconnect logic",
-    prompt:
-      "Explain the client reconnect strategy in simple terms, include edge cases, and provide a markdown checklist artifact for production readiness.",
-  },
-  {
-    id: "artifact-gen",
-    label: "Generate release checklist",
-    prompt:
-      "Create a release checklist for this monorepo (web/api/security/perf). Return both a concise response and an artifact in markdown format.",
-  },
-] as const;
+
+/** ChatGPT-style: pixels from bottom to treat as "following" the stream. */
+const CHAT_STICKY_BOTTOM_PX = 80;
+
+type WorkspaceTab = "artifacts" | "reasoning" | "observability";
 
 export function ChatInterface() {
   const [message, setMessage] = useState("");
-  const traceOpen = useUiStore((s) => s.traceOpen);
-  const setTraceOpen = useUiStore((s) => s.setTraceOpen);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("artifacts");
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const stickToBottomRef = useRef(true);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const { t, locale, setLocale } = useTranslations();
   const { frames, sendMessage, status, connected, debug, permissions } = useAgent(WS_URL);
+  const prevStatusRef = useRef(status);
 
   const responseText = useMemo(
     () =>
@@ -51,106 +41,331 @@ export function ChatInterface() {
     [frames],
   );
 
+  const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
+  const onChatScroll = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = dist <= CHAT_STICKY_BOTTOM_PX;
+    setShowScrollToBottom(dist > CHAT_STICKY_BOTTOM_PX && el.scrollHeight > el.clientHeight + 4);
+  }, []);
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    scrollChatToBottom("auto");
+  }, [responseText, frames.length, status, scrollChatToBottom]);
+
+  useEffect(() => {
+    if (status === "thinking" && prevStatusRef.current !== "thinking") {
+      setWorkspaceTab("reasoning");
+    }
+    prevStatusRef.current = status;
+  }, [status]);
+
+  const submitMessage = useCallback(() => {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    stickToBottomRef.current = true;
+    sendMessage(trimmed);
+    setMessage("");
+    requestAnimationFrame(() => scrollChatToBottom("smooth"));
+    textareaRef.current?.focus();
+  }, [message, sendMessage, scrollChatToBottom]);
+
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!message.trim()) return;
-    sendMessage(message.trim());
-    setMessage("");
+    submitMessage();
+  };
+
+  const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submitMessage();
+    }
   };
 
   const runDemoPrompt = (prompt: string) => {
+    stickToBottomRef.current = true;
     sendMessage(prompt);
     setMessage(prompt);
+    requestAnimationFrame(() => scrollChatToBottom("smooth"));
   };
 
+  const statusLabel =
+    status === "thinking"
+      ? t.states.thinking
+      : status === "responding"
+        ? t.states.responding
+        : t.states.idle;
+
   return (
-    <div className="grid h-screen grid-cols-1 gap-4 p-4 md:grid-cols-[1.2fr_0.8fr]">
-      <section className="flex min-h-0 flex-col rounded-xl border bg-black/40 p-4">
-        <header className="mb-3 flex items-center justify-between">
-          <h1 className="text-sm font-semibold">{UI_TEXT.panes.chat}</h1>
-          <span className={`text-xs ${connected ? "text-emerald-400" : "text-rose-400"}`}>
-            {connected ? UI_TEXT.labels.online : UI_TEXT.labels.offline}
-          </span>
-        </header>
+    <div className="hermes-grid relative z-[1] flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-base)]">
+      {/* Header: minimal IDE-adjacent chrome */}
+      <header className="sticky top-0 z-20 shrink-0 border-b border-[var(--border-hairline)] bg-[var(--bg-elevated)] backdrop-blur-md">
+        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4 px-3 py-2.5 md:px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-sidebar)] text-zinc-400">
+              <Sparkles className="h-4 w-4" aria-hidden />
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-baseline gap-2">
+                <h1 className="truncate text-[15px] font-medium tracking-tight text-zinc-100">{t.appName}</h1>
+                <span className="hidden text-[11px] text-zinc-600 sm:inline">Hermes</span>
+              </div>
+              <p className="truncate text-xs text-zinc-500">{t.tagline}</p>
+            </div>
+          </div>
 
-        <div className="mb-4 grow overflow-y-auto rounded-lg border bg-zinc-950/40 p-3">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={status}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="mb-2 text-xs text-zinc-400"
+          <div className="flex shrink-0 items-center gap-2 md:gap-3">
+            <div
+              className="flex items-center gap-0.5 rounded-lg border border-[var(--border-hairline)] bg-black/20 p-0.5"
+              role="group"
+              aria-label={t.labels.language}
             >
-              {status === "thinking"
-                ? UI_TEXT.states.thinking
-                : status === "responding"
-                  ? UI_TEXT.states.responding
-                  : UI_TEXT.states.idle}
-            </motion.div>
-          </AnimatePresence>
-          <div className="whitespace-pre-wrap text-sm">{responseText}</div>
-        </div>
-
-        <form className="flex gap-2" onSubmit={onSubmit}>
-          <input
-            className="w-full rounded-md border bg-zinc-950 px-3 py-2 text-sm outline-none"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder={UI_TEXT.actions.placeholder}
-          />
-          {permissions.canRunBenchmark ? (
-            <button
-              className="rounded-md border border-zinc-700 px-3 py-2 text-sm font-medium text-zinc-200"
-              type="button"
-              onClick={() => sendMessage("/benchmark")}
-            >
-              {UI_TEXT.actions.runBenchmark}
-            </button>
-          ) : null}
-          <button className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium" type="submit">
-            {UI_TEXT.actions.send}
-          </button>
-        </form>
-        <div className="mt-3 rounded border bg-zinc-950/50 p-2 text-xs text-zinc-300">
-          <div className="mb-2 font-medium">{UI_TEXT.labels.demoTemplates}</div>
-          <div className="flex flex-wrap gap-2">
-            {DEMO_PROMPTS.map((item) => (
               <button
-                key={item.id}
                 type="button"
-                className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200"
-                onClick={() => runDemoPrompt(item.prompt)}
+                onClick={() => setLocale("zh")}
+                className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                  locale === "zh" ? "bg-white/[0.08] text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+                }`}
               >
-                {item.label}
+                中文
               </button>
-            ))}
-          </div>
-        </div>
-        <div className="mt-3 rounded border bg-zinc-950/50 p-2 text-xs text-zinc-400">
-          <div className="mb-1 font-medium text-zinc-300">{UI_TEXT.labels.debug}</div>
-          <div className="grid grid-cols-2 gap-1">
-            <span>{UI_TEXT.labels.lastSeq}</span>
-            <span>{debug.lastSeq}</span>
-            <span>{UI_TEXT.labels.resumeSent}</span>
-            <span>{debug.resumeSent}</span>
-            <span>{UI_TEXT.labels.reconnectAttempts}</span>
-            <span>{debug.reconnectAttempts}</span>
-            <span>{UI_TEXT.labels.queuedMessages}</span>
-            <span>{debug.queuedMessages}</span>
-          </div>
-        </div>
-        <div className="mt-3">
-          <DiagnosticsDrawer />
-        </div>
-      </section>
+              <button
+                type="button"
+                onClick={() => setLocale("en")}
+                className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                  locale === "en" ? "bg-white/[0.08] text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                EN
+              </button>
+            </div>
 
-      <aside className="flex min-h-0 flex-col gap-4 rounded-xl border bg-black/40 p-4">
-        <h2 className="text-sm font-semibold">{UI_TEXT.panes.artifacts}</h2>
-        <ArtifactsPreview frames={frames} responseText={responseText} />
-        <ReasoningTrace frames={frames} open={traceOpen} onOpenChange={setTraceOpen} />
-      </aside>
+            <div
+              className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium ${
+                connected
+                  ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-400/90"
+                  : "border-rose-500/20 bg-rose-500/5 text-rose-400/90"
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-400" : "bg-rose-400"}`} />
+              {connected ? t.labels.online : t.labels.offline}
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Cursor: main column + fixed right rail */}
+      <main className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col overflow-hidden md:flex-row">
+        {/* Center: conversation + ChatGPT composer */}
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col border-[var(--border-hairline)] bg-[var(--bg-canvas)] md:border-r">
+          <div className="flex shrink-0 items-center justify-between border-b border-[var(--border-hairline)] px-4 py-2.5 md:px-5">
+            <div className="flex items-center gap-2 text-[13px] font-medium text-zinc-300">
+              <MessageSquare className="h-3.5 w-3.5 text-zinc-500" aria-hidden />
+              {t.panes.chat}
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+              <Activity className="h-3 w-3" aria-hidden />
+              <span className="hidden sm:inline">{t.labels.connection}</span>
+              <span className="rounded-md border border-[var(--border-hairline)] bg-black/20 px-2 py-0.5 font-mono text-[10px] text-zinc-400">
+                {statusLabel}
+              </span>
+            </div>
+          </div>
+
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <div
+              ref={chatScrollRef}
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions"
+              onScroll={onChatScroll}
+              className="hermes-scrollbar h-full overflow-y-auto overflow-x-hidden overscroll-y-contain"
+            >
+              <div className="mx-auto w-full max-w-2xl px-4 py-6 md:px-6">
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    key={status}
+                    initial={{ opacity: 0.85 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0.85 }}
+                    transition={{ duration: 0.15 }}
+                    className="mb-6 flex items-center gap-3 text-[11px] text-zinc-500"
+                  >
+                    <span className="h-px flex-1 bg-[var(--border-hairline)]" />
+                    <span className="shrink-0 tabular-nums">{statusLabel}</span>
+                    <span className="h-px flex-1 bg-[var(--border-hairline)]" />
+                  </motion.div>
+                </AnimatePresence>
+
+                {responseText ? (
+                  <div className="hermes-prose-chat whitespace-pre-wrap break-words">{responseText}</div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-16 text-center">
+                    <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border-hairline)] bg-[var(--bg-sidebar)]">
+                      <Sparkles className="h-6 w-6 text-zinc-500" />
+                    </div>
+                    <p className="max-w-md text-sm leading-relaxed text-zinc-500">{t.labels.emptyChatHint}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            {showScrollToBottom ? (
+              <button
+                type="button"
+                className="absolute bottom-5 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-zinc-300 shadow-lg shadow-black/30 backdrop-blur-md transition hover:bg-white/[0.06] hover:text-zinc-100"
+                aria-label={t.labels.scrollToBottom}
+                title={t.labels.scrollToBottom}
+                onClick={() => {
+                  stickToBottomRef.current = true;
+                  scrollChatToBottom("smooth");
+                }}
+              >
+                <ArrowDown className="h-4 w-4" aria-hidden />
+              </button>
+            ) : null}
+          </div>
+
+          {/* ChatGPT-style composer: rounded shell + circular send */}
+          <div className="shrink-0 border-t border-[var(--border-hairline)] bg-[var(--bg-composer)] px-3 pb-4 pt-3 md:px-5">
+            <form className="mx-auto w-full max-w-2xl space-y-3" onSubmit={onSubmit}>
+              <div className="hermes-composer-shell flex items-end gap-2 rounded-[1.35rem] p-2 pl-3">
+                <textarea
+                  ref={textareaRef}
+                  rows={1}
+                  className="hermes-input max-h-[min(40vh,220px)] min-h-[44px] w-full resize-none py-2.5 text-[15px] leading-relaxed text-zinc-100 placeholder:text-zinc-600"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={onComposerKeyDown}
+                  placeholder={t.actions.placeholder}
+                  autoComplete="off"
+                  aria-label={t.actions.placeholder}
+                />
+                <button
+                  type="submit"
+                  disabled={!message.trim()}
+                  className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-900 transition enabled:hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label={t.actions.send}
+                >
+                  <ArrowUp className="h-4 w-4" aria-hidden />
+                </button>
+              </div>
+              <p className="px-1 text-center text-[11px] text-zinc-600">{t.labels.demoTemplates}</p>
+              <div className="flex flex-wrap justify-center gap-2">
+                {t.demoPrompts.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="rounded-full border border-[var(--border-hairline)] bg-black/20 px-3 py-1.5 text-xs font-medium text-zinc-400 transition hover:border-[var(--border-strong)] hover:bg-white/[0.04] hover:text-zinc-200"
+                    onClick={() => runDemoPrompt(item.prompt)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+                {permissions.canRunBenchmark ? (
+                  <button
+                    type="button"
+                    className="rounded-full border border-dashed border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-500 transition hover:border-zinc-500 hover:text-zinc-300"
+                    onClick={() => sendMessage("/benchmark")}
+                  >
+                    {t.actions.runBenchmark}
+                  </button>
+                ) : null}
+              </div>
+            </form>
+          </div>
+        </section>
+
+        {/* Right rail: Cursor-style workspace — tabs so each pane gets full height (no stacked squeeze) */}
+        <aside className="flex min-h-0 w-full min-w-0 flex-1 flex-col border-t border-[var(--border-hairline)] bg-[var(--bg-sidebar)] md:w-[min(100%,28rem)] md:max-w-[min(100%,28rem)] md:flex-none md:border-l md:border-t-0 lg:w-[min(100%,32rem)] lg:max-w-[32rem] xl:w-[34rem] xl:max-w-[34rem]">
+          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-hairline)] px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+            <PanelRight className="h-3.5 w-3.5" aria-hidden />
+            {t.panes.workspace}
+          </div>
+
+          <div className="flex shrink-0 gap-1 border-b border-[var(--border-hairline)] px-2 pb-2 pt-2" role="tablist" aria-label={t.panes.workspace}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceTab === "artifacts"}
+              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-center text-[12px] font-medium transition ${
+                workspaceTab === "artifacts"
+                  ? "bg-white/[0.08] text-zinc-100 shadow-[0_1px_0_rgba(255,255,255,0.06)]"
+                  : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
+              }`}
+              onClick={() => setWorkspaceTab("artifacts")}
+            >
+              <LayoutGrid className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+              <span className="truncate">{t.panes.artifacts}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceTab === "reasoning"}
+              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-center text-[12px] font-medium transition ${
+                workspaceTab === "reasoning"
+                  ? "bg-white/[0.08] text-zinc-100 shadow-[0_1px_0_rgba(255,255,255,0.06)]"
+                  : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
+              }`}
+              onClick={() => setWorkspaceTab("reasoning")}
+            >
+              <MessageSquare className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+              <span className="truncate">{t.panes.reasoning}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceTab === "observability"}
+              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-center text-[12px] font-medium transition ${
+                workspaceTab === "observability"
+                  ? "bg-white/[0.08] text-zinc-100 shadow-[0_1px_0_rgba(255,255,255,0.06)]"
+                  : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
+              }`}
+              onClick={() => setWorkspaceTab("observability")}
+            >
+              <Activity className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+              <span className="truncate">{t.panes.observability}</span>
+            </button>
+          </div>
+
+          <div className="hermes-scrollbar flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-2">
+            {workspaceTab === "artifacts" ? (
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <ArtifactsPreview frames={frames} responseText={responseText} />
+              </div>
+            ) : null}
+            {workspaceTab === "reasoning" ? (
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <ReasoningTrace variant="embedded" frames={frames} />
+              </div>
+            ) : null}
+            {workspaceTab === "observability" ? (
+              <div className="hermes-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+                <div className="rounded-lg border border-[var(--border-hairline)] bg-black/20 px-3 py-2.5 text-[11px] text-zinc-500">
+                  <div className="mb-1.5 font-medium text-zinc-400">{t.labels.debug}</div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px]">
+                    <span>{t.labels.lastSeq}</span>
+                    <span className="text-right text-zinc-300">{debug.lastSeq}</span>
+                    <span>{t.labels.resumeSent}</span>
+                    <span className="text-right text-zinc-300">{debug.resumeSent}</span>
+                    <span>{t.labels.reconnectAttempts}</span>
+                    <span className="text-right text-zinc-300">{debug.reconnectAttempts}</span>
+                    <span>{t.labels.queuedMessages}</span>
+                    <span className="text-right text-zinc-300">{debug.queuedMessages}</span>
+                  </div>
+                </div>
+                <DiagnosticsDrawer />
+              </div>
+            ) : null}
+          </div>
+        </aside>
+      </main>
     </div>
   );
 }

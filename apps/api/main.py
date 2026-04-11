@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# 配置文件加载
+_api_dir = Path(__file__).resolve().parent
+_repo_root = _api_dir.parent.parent
+load_dotenv(_repo_root / ".env")
+load_dotenv(_api_dir / ".env", override=True)
+
 import asyncio
 import json
 import logging
@@ -104,11 +114,36 @@ class NoopHermesService:
 
 
 def _prime_provider_env() -> None:
-    # Keep bootstrap deterministic on first boot; users can override later.
+    # Keep bootstrap deterministic on first boot; users can override via .env (loaded above).
     os.environ.setdefault("OPENAI_API_KEY", "stub-openai-key")
     os.environ.setdefault("ANTHROPIC_API_KEY", "stub-anthropic-key")
     os.environ.setdefault("HERMES_PROVIDER", "openai")
     os.environ.setdefault("HERMES_MODEL", "gpt-4o-mini")
+    # OpenAI-compatible base URL (DashScope, Azure OpenAI, etc.) — OpenAI SDK reads OPENAI_BASE_URL.
+    if raw := os.getenv("OPENAI_BASE_URL"):
+        os.environ["OPENAI_BASE_URL"] = raw.strip().rstrip("/")
+        # When a custom OpenAI-compatible base URL is set, never route to Anthropic by mistake.
+        os.environ["HERMES_PROVIDER"] = "openai"
+    model_lower = (os.getenv("HERMES_MODEL") or "").lower()
+    # Qwen / GPT / DeepSeek families use OpenAI-compatible APIs (not api.anthropic.com).
+    if any(x in model_lower for x in ("qwen", "gpt-", "deepseek", "moonshot", "doubao")):
+        os.environ["HERMES_PROVIDER"] = "openai"
+
+
+def _explicit_openai_client_kwargs() -> dict[str, str]:
+    """Credentials for AIAgent to skip auxiliary `resolve_provider_client("auto")` routing.
+
+    Without explicit base_url + api_key, hermes-agent picks a default client (often Anthropic
+    when ANTHROPIC_API_KEY is set), then sends HERMES_MODEL to the wrong host (404 for qwen).
+    """
+    key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not key or key == "stub-openai-key":
+        return {}
+    base = (os.getenv("OPENAI_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        base = "https://api.openai.com/v1"
+    prov = (os.getenv("HERMES_PROVIDER") or "openai").strip().lower() or "openai"
+    return {"base_url": base, "api_key": key, "provider": prov}
 
 
 @dataclass
@@ -246,14 +281,16 @@ class HermesServiceWrapper:
                     emit(FrameType.RESPONSE, {"content": text, "role": "assistant", "final": False})
 
             try:
-                agent = self._agent_class(
-                    model=os.getenv("HERMES_MODEL", "gpt-4o-mini"),
-                    reasoning_callback=reasoning_callback,
-                    tool_start_callback=tool_start_callback,
-                    tool_complete_callback=tool_complete_callback,
-                    stream_delta_callback=stream_delta_callback,
-                    quiet_mode=True,
-                )
+                agent_kw: dict[str, Any] = {
+                    "model": os.getenv("HERMES_MODEL", "gpt-4o-mini"),
+                    "reasoning_callback": reasoning_callback,
+                    "tool_start_callback": tool_start_callback,
+                    "tool_complete_callback": tool_complete_callback,
+                    "stream_delta_callback": stream_delta_callback,
+                    "quiet_mode": True,
+                }
+                agent_kw.update(_explicit_openai_client_kwargs())
+                agent = self._agent_class(**agent_kw)
                 result = agent.run_conversation(
                     user_message=request.message,
                     system_message=request.system_prompt,
@@ -310,6 +347,19 @@ async def unhandled_exception_handler(_, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=500, content={"error": "INTERNAL_SERVER_ERROR"})
 
 
+def _normalize_error_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Hermes may emit `detail` as a list; ErrorPayload requires dict | None."""
+    out = dict(payload)
+    d = out.get("detail")
+    if isinstance(d, list):
+        out["detail"] = {"errors": d}
+    elif isinstance(d, str):
+        out["detail"] = {"message": d}
+    elif d is not None and not isinstance(d, dict):
+        out["detail"] = {"value": repr(d)}
+    return out
+
+
 def _to_ws_frame(
     session_id: str,
     trace_id: str,
@@ -349,7 +399,7 @@ def _to_ws_frame(
             session_id=session_id,
             trace_id=trace_id,
             seq=seq,
-            payload=ErrorPayload(**event.payload),
+            payload=ErrorPayload(**_normalize_error_event_payload(event.payload)),
         )
     else:
         frame = StatusFrame(
@@ -734,19 +784,33 @@ async def ws_agent(websocket: WebSocket) -> None:
             payload=ErrorPayload(
                 code="BAD_REQUEST",
                 message=prompt_service.render("errors/bad_request.j2"),
-                detail=exc.errors(),
+                detail={"errors": exc.errors(include_url=False)},
             ),
         )
-        await websocket.send_text(json.dumps(frame.model_dump(mode="json")))
+        try:
+            await websocket.send_text(json.dumps(frame.model_dump(mode="json")))
+        except (RuntimeError, WebSocketDisconnect):
+            pass
     except Exception as exc:
         frame = ErrorFrame(
             session_id="unknown",
             trace_id=str(uuid4()),
             seq=0,
-            payload=ErrorPayload(code="WS_INTERNAL_ERROR", message=str(exc)),
+            payload=ErrorPayload(
+                code="WS_INTERNAL_ERROR",
+                message=str(exc),
+                detail={"exception_type": type(exc).__name__},
+            ),
         )
-        await websocket.send_text(json.dumps(frame.model_dump(mode="json")))
+        try:
+            await websocket.send_text(json.dumps(frame.model_dump(mode="json")))
+        except (RuntimeError, WebSocketDisconnect):
+            pass
     finally:
         if heartbeat_task:
             heartbeat_task.cancel()
-        await websocket.close()
+        try:
+            await websocket.close()
+        except RuntimeError:
+            # Already closed or ASGI response completed (e.g. client disconnected first).
+            pass

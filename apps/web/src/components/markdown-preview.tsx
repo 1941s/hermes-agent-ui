@@ -54,5 +54,10 @@ export function MarkdownPreview({ content }: { content: string }) {
     };
   }, [content]);
 
-  return <article className="prose prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: html }} />;
+  return (
+    <article
+      className="max-w-none text-[15px] leading-[1.7] text-[var(--prose-body)] [&_p]:mb-3 [&_pre]:my-3 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:border [&_pre]:border-[var(--border-hairline)]"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }

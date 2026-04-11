@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./ui-text": "./src/ui-text.ts"
+    "./ui-text": "./src/ui-text.ts",
+    "./locale-messages": "./src/locale-messages.ts"
   }
 }

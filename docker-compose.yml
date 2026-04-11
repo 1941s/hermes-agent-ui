@@ -13,16 +13,14 @@ services:
       args:
         PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
     container_name: hermes-api-demo
+    env_file:
+      - apps/api/.env
     environment:
       HERMES_UI_DB_PATH: /tmp/runtime.db
       HERMES_UI_AUTH_ENABLED: "0"
       HERMES_UI_JWT_SECRET: ${HERMES_UI_JWT_SECRET:-replace-me}
       HERMES_UI_JWT_ISSUER: ${HERMES_UI_JWT_ISSUER:-hermes-ui}
       HERMES_UI_JWT_AUDIENCE: ${HERMES_UI_JWT_AUDIENCE:-hermes-web}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-stub-openai-key}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-stub-anthropic-key}
-      HERMES_PROVIDER: ${HERMES_PROVIDER:-openai}
-      HERMES_MODEL: ${HERMES_MODEL:-gpt-4o-mini}
       HERMES_UI_SKIP_AGENT_BOOT: ${HERMES_UI_SKIP_AGENT_BOOT:-0}
     ports:
       - "8000:8000"
@@ -105,16 +103,14 @@ services:
       args:
         PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
     container_name: hermes-api-prod
+    env_file:
+      - apps/api/.env
     environment:
       HERMES_UI_DB_PATH: /tmp/runtime.db
       HERMES_UI_AUTH_ENABLED: "1"
       HERMES_UI_JWT_SECRET: ${HERMES_UI_JWT_SECRET:-replace-me}
       HERMES_UI_JWT_ISSUER: ${HERMES_UI_JWT_ISSUER:-hermes-ui}
       HERMES_UI_JWT_AUDIENCE: ${HERMES_UI_JWT_AUDIENCE:-hermes-web}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-stub-openai-key}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-stub-anthropic-key}
-      HERMES_PROVIDER: ${HERMES_PROVIDER:-openai}
-      HERMES_MODEL: ${HERMES_MODEL:-gpt-4o-mini}
       DATABASE_URL: ${DATABASE_URL:-postgresql://hermes:change-me@postgres:5432/hermes}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
