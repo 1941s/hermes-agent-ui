@@ -1,6 +1,6 @@
 # Hermes-Agent：面向高性能 LLM 编排的工业级 Web UI
 
-> **面向 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 的生产级参考 UI** —— 为不愿在 **延迟**、**安全** 与 **交付速度** 之间妥协的团队而设计。
+> **面向 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 的生产级参考实现** —— 为需要在 **生产环境** 落地 Hermes Agent、且不愿在 **延迟**、**安全** 与 **交付速度** 之间妥协的团队而设计。（规范与接口说明以英文 [README.md](README.md) 为 SSOT。）
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Build](https://img.shields.io/badge/build-GitHub%20Actions-lightgrey.svg)](#可靠性与-ci-证据)
@@ -9,10 +9,11 @@
 
 **语言：** 规范文档以 **[English README](README.md)**（SSOT）为准；本文件为 **简体中文全文镜像**，与英文结构一一对应，便于国内团队阅读与对内同步。
 
-**存在的意义 —— 三句话**
+**存在的意义 —— 四句话**
 
 - **60FPS 量级体验** —— 长推理 Trace 通过缓冲渲染与 **超过 500 行自动虚拟列表** 保持流畅。
 - **零信任多租户隔离** —— **JWT 范围权限**、**会话归属绑定**、**沙箱化 HTML 产物** 是一等公民，非事后补丁。
+- **产品级 Shell 与交互** —— **App Shell** 多区域 Hub（对话 / 洞察 / 技能 / 编排）、**IndexedDB** 多会话与历史恢复、与上游契约一致的 **`clarify` 同连接阻塞点选**（`clarify_pick` + 长连接合并调度）。
 - **一键部署** —— **Docker Compose** 双 profile：**Demo**（快速惊艳）与 **Prod**（**默认安全**：非 root、内网数据面、健康检查串联启动）。
 
 ---
@@ -57,6 +58,14 @@
 - **结构化帧**（`THOUGHT`、`TOOL_CALL`、`ARTIFACT`、`RESPONSE`、`STATUS`、`ERROR`…）与单调递增 **`seq`**。
 - **服务端回放持久化**（SQLite）+ 客户端 **`resume_from_seq`** —— 重连不断叙事。
 - 客户端 **心跳 + 指数退避重连** —— 弱网下聊天仍「活着」。
+- **浏览器侧会话存储（IndexedDB）** —— 多会话列表、标题与按 **`session_id`** 水合 transcript（客户端体验增强；服务端回放仍按属主隔离）。
+
+### 产品 Shell、侧车 API 与交互式 `clarify`
+
+- **App Shell**（Next.js App Router）：侧栏导航至 **对话 / 洞察 / 技能 / 编排**，以 **可扩展 Hub** 形态交付，而非单页演示。
+- **侧车 HTTP API**：`apps/api/routers/` 下 FastAPI 路由（洞察、技能目录/安装、编排等占位与实现以代码为准），部分能力配合 SQLite 侧车存储。
+- **`clarify` 工具（对齐上游）**：模型调用 `clarify` 时，服务端在 **同一条 `/ws/agent` 连接**上阻塞 Hermes 回调，直到用户通过 **`clarify_pick`** 提交选择（后台读队列 + 与 agent 流 **合并等待**，避免饿死点选）。界面可展示 **`STATUS`（`waiting_clarify`）**。可选 **`HERMES_CLARIFY_TIMEOUT_SEC`**（默认 `3600`；`≤0` 表示无限等待）。
+- **`packages/skill-spec`**：供 Skills 界面与校验使用的 `skill.json` JSON Schema 与说明文档。
 
 ---
 
@@ -73,8 +82,8 @@ cp .env.example.docker .env && docker compose --profile demo up --build
 然后：
 
 1. 打开 **`http://localhost:3000`**
-2. 在输入框下方点击任意 **Demo Templates**
-3. 观察 **推理 Trace** 与 **Artifacts** 面板实时更新
+2. 使用侧栏在 **对话** 与 **洞察 / 技能 / 编排** Hub 间切换（默认从对话体验起）。
+3. 在输入框下方点击任意 **Demo Templates**，观察 **推理 Trace** 与 **Artifacts** 面板实时更新。
 
 **端点**
 
@@ -164,9 +173,10 @@ flowchart LR
 
 **帧流（简化）**
 
-1. 客户端连接 **`/ws/agent`**，发送含 **`auth_token`**、**`session_id`**、可选 **`resume_from_seq`** 的 **`WsRequest`**。
+1. 客户端建立 **长连接** **`/ws/agent`**，发送 **`WsRequest`**（含 **`auth_token`**、**`session_id`**、**`message`**、可选 **`history`**、**`resume_from_seq`**；解除 `clarify` 阻塞时附带 **`clarify_pick`**）。
 2. 服务端 **先于回放完成鉴权**；将 **`session_id`** 绑定 **`user_id`**；流式输出结构化帧；对可回放帧 **持久化**。
-3. UI **批量** 处理入站帧，长 Trace **虚拟化**；**Artifacts** 在 **安全策略** 下渲染。
+3. Agent 流式输出期间，服务端 **合并处理** 入站消息，使 **`clarify_pick`** 可在 **不关闭 WebSocket** 的情况下送达。
+4. UI **批量** 处理入站帧，长 Trace **虚拟化**；**Artifacts** 在 **安全策略** 下渲染。
 
 ---
 
@@ -204,9 +214,12 @@ flowchart LR
 
 | 路径 | 职责 |
 | --- | --- |
-| `apps/web` | Next.js 14（App Router、TS、Tailwind、Zustand、TanStack Query） |
-| `apps/api` | FastAPI + Hermes 结构化流式 + 回放持久化 |
-| `packages/config` | 共享 UI 文案与常量 |
+| `apps/web` | Next.js 14（App Router、TS、Tailwind、Zustand、TanStack Query）；**App Shell** 与 Hub 路由见 `src/app/(shell)/` |
+| `apps/web/src/lib` | IndexedDB 会话管理、对话历史、`clarify` 帧解析等 |
+| `apps/api` | FastAPI + Hermes 结构化流式 + 回放持久化 + **`/ws/agent` clarify 合并调度** |
+| `apps/api/routers` | 侧车 REST：洞察、技能、编排等（以各模块为准） |
+| `packages/config` | 共享 UI 文案与常量（i18n） |
+| `packages/skill-spec` | `skill.json` JSON Schema 与规范说明 |
 | `docker/` | 面向生产的 Dockerfile |
 | `scripts/` | `perf-baseline.mjs`、`demo-golden.mjs` |
 
@@ -251,6 +264,11 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - 单次回放上限：**`HERMES_UI_MAX_REPLAY_FRAMES`**（默认 `2000`）。
 - 产物大小上限：**`HERMES_UI_MAX_ARTIFACT_CHARS`**（默认 `20000`，截断后缀 `[TRUNCATED_BY_SERVER]`）。
 
+### `clarify` 与 WebSocket 字段
+
+- **`WsRequest.clarify_pick`** —— 用户在服务端阻塞于 Hermes **`clarify`** 回调期间提交的选择；须与当前回合 **同一 `session_id`** 且 **同一鉴权主体**。
+- **`HERMES_CLARIFY_TIMEOUT_SEC`** —— 可选服务端等待上限（默认 `3600`；`≤0` 表示无限等待）。
+
 ### 认证与会话隔离
 
 - WebSocket 首包：**`auth_token`**（JWT，当前 HS256）。
@@ -283,7 +301,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 **测试**
 
-- `apps/api/tests/` —— 单元、鉴权、scope、**WebSocket 端到端韧性**（`test_e2e_ws_resilience.py`）。
+- `apps/api/tests/` —— 单元、鉴权、scope、**WebSocket 端到端韧性**（`test_e2e_ws_resilience.py`）、**侧车 API**（`test_sidecar_api.py`）。
 
 ---
 
@@ -292,6 +310,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - 将 `prod` 下 **持久化 replay 卷** 作为一等文档路径。
 - 可选 **RS256 / JWKS**，支撑多服务部署。
 - 随上游演进丰富 Hermes 事件映射。
+- 深化 **Skills / Orchestration** 等产品面的集成（随能力稳定迭代）。
 
 ---
 
