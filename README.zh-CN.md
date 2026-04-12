@@ -18,7 +18,7 @@
 
 ## 预览图
 
-![ScreenShot_2026-04-12_161840_012](F:\desktop\hermes-agent-ui\assets\ScreenShot_2026-04-12_161840_012.png)
+![ScreenShot_2026-04-12_161840_012](https://free.picui.cn/free/2026/04/12/69db5ea0d811e.png)
 
 ---
 
