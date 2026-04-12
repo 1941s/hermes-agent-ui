@@ -121,3 +121,81 @@ html {
 .hermes-input:focus {
   outline: none;
 }
+
+/* React Flow: “thinking” sub-agent — soft animated rim (no theme-breaking inline colors in Mermaid) */
+@keyframes hermes-flow-shimmer {
+  0% {
+    box-shadow:
+      0 0 0 1px rgba(56, 189, 248, 0.35),
+      0 0 24px rgba(56, 189, 248, 0.12);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(167, 139, 250, 0.45),
+      0 0 28px rgba(167, 139, 250, 0.16);
+  }
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(56, 189, 248, 0.35),
+      0 0 24px rgba(56, 189, 248, 0.12);
+  }
+}
+
+.hermes-flow-node--thinking .react-flow__node-default,
+.hermes-flow-node--thinking {
+  animation: hermes-flow-shimmer 2.4s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+
+/* Chat: assistant “thinking” — staggered dots (ChatGPT / Claude–adjacent) */
+@keyframes hermes-thinking-dot {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  40% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}
+
+.hermes-thinking-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, #a1a1aa, #71717a);
+  animation: hermes-thinking-dot 1.15s ease-in-out infinite;
+}
+
+.hermes-thinking-dot-d1 {
+  animation-delay: 0.15s;
+}
+
+.hermes-thinking-dot-d2 {
+  animation-delay: 0.3s;
+}
+
+/* Subtle sheen while waiting for first token (no empty markdown) */
+@keyframes hermes-bubble-thinking-shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+.hermes-assistant-bubble--thinking-only {
+  background: linear-gradient(
+      120deg,
+      rgba(24, 24, 27, 0.65) 0%,
+      rgba(39, 39, 42, 0.75) 40%,
+      rgba(24, 24, 27, 0.65) 80%
+    )
+    repeat;
+  background-size: 200% 100%;
+  animation: hermes-bubble-thinking-shimmer 2s ease-in-out infinite;
+}

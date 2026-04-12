@@ -2,26 +2,31 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-export type AgentFrameType = "THOUGHT" | "TOOL_CALL" | "ARTIFACT" | "RESPONSE" | "HEARTBEAT" | "ERROR" | "STATUS";
+import {
+  appendFrameToTurns,
+  buildHistoryFromTurns,
+  flattenFramesFromTurns,
+  maxSeqFromTurns,
+  PENDING_TURN_PREFIX,
+} from "@/lib/conversation-history";
+import { SessionManager } from "@/lib/session-manager";
+import type { AgentFrame, ChatTurn } from "@/types";
 
-export type AgentFrame = {
-  type: AgentFrameType;
-  session_id: string;
-  trace_id: string;
-  seq: number;
-  ts: string;
-  payload: Record<string, unknown>;
-};
+export type { AgentFrame, ChatTurn } from "@/types";
+export type AgentFrameType = AgentFrame["type"];
 
-export type AgentStatus = "thinking" | "responding" | "idle" | "disconnected";
+export type AgentStatus =
+  | "thinking"
+  | "responding"
+  | "idle"
+  | "disconnected"
+  | "waiting_clarify";
 
 const FLUSH_INTERVAL_MS = 16;
 const HEARTBEAT_TIMEOUT_MS = 30000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
-const SESSION_STORAGE_PREFIX = "hermes-ui/session/";
-const MAX_STORED_FRAMES = 800;
-const MAX_TRACE_BUCKETS = 20;
+const HISTORY_TURNS = 10;
 const AUTH_TOKEN = process.env.NEXT_PUBLIC_AGENT_AUTH_TOKEN ?? null;
 const SCOPE_BENCHMARK_RUN = "benchmark:run";
 
@@ -53,47 +58,53 @@ function parseScopesFromToken(token: string | null): Set<string> {
   }
 }
 
-export function useAgent(wsUrl: string) {
-  const [frames, setFrames] = useState<AgentFrame[]>([]);
+export type UseAgentOptions = {
+  /** External session id — when it changes, frames reset and turns hydrate from IndexedDB. */
+  sessionId: string;
+};
+
+export function useAgent(wsUrl: string, options?: UseAgentOptions) {
+  const sessionId = options?.sessionId ?? "";
+
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [hydrated, setHydrated] = useState(false);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const turnsRef = useRef(turns);
+  turnsRef.current = turns;
+
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+
   const wsRef = useRef<WebSocket | null>(null);
   const queueRef = useRef<AgentFrame[]>([]);
-  const traceBucketsRef = useRef<Map<string, AgentFrame[]>>(new Map());
   const rafRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const heartbeatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sessionIdRef = useRef(`sess_${Math.random().toString(36).slice(2)}`);
   const outboundQueueRef = useRef<string[]>([]);
   const isConnectingRef = useRef(false);
   const lastSeqRef = useRef<number>(-1);
   const lastResumeSeqRef = useRef<number>(-1);
   const pendingResponseRef = useRef(false);
   const userScopesRef = useRef<Set<string>>(parseScopesFromToken(AUTH_TOKEN));
+  const persistTimerRef = useRef<number | null>(null);
 
-  const getSessionStorageKey = useCallback(
-    () => `${SESSION_STORAGE_PREFIX}${sessionIdRef.current}`,
-    [],
-  );
+  const frames = useMemo(() => flattenFramesFromTurns(turns), [turns]);
 
   const flushQueue = useCallback(() => {
     rafRef.current = null;
     if (!queueRef.current.length) return;
     const batch = queueRef.current.splice(0, queueRef.current.length);
-    for (const frame of batch) {
-      const list = traceBucketsRef.current.get(frame.trace_id) ?? [];
-      list.push(frame);
-      traceBucketsRef.current.set(frame.trace_id, list);
-    }
-    while (traceBucketsRef.current.size > MAX_TRACE_BUCKETS) {
-      const oldestKey = traceBucketsRef.current.keys().next().value as string | undefined;
-      if (!oldestKey) break;
-      traceBucketsRef.current.delete(oldestKey);
-    }
-    setFrames((prev) => [...prev, ...batch].slice(-MAX_STORED_FRAMES));
+    setTurns((prev) => {
+      let next = prev;
+      for (const frame of batch) {
+        next = appendFrameToTurns(next, frame);
+      }
+      return next;
+    });
   }, []);
 
   const scheduleFlush = useCallback(() => {
@@ -117,17 +128,6 @@ export function useAgent(wsUrl: string) {
     if (heartbeatTimerRef.current) clearTimeout(heartbeatTimerRef.current);
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
   }, []);
-
-  const persistFrames = useCallback(
-    (nextFrames: AgentFrame[]) => {
-      try {
-        sessionStorage.setItem(getSessionStorageKey(), JSON.stringify(nextFrames.slice(-MAX_STORED_FRAMES)));
-      } catch {
-        // Ignore storage overflow; runtime stream should still continue.
-      }
-    },
-    [getSessionStorageKey],
-  );
 
   const flushOutboundQueue = useCallback(() => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -182,7 +182,12 @@ export function useAgent(wsUrl: string) {
         } else if (frame.type === "HEARTBEAT") {
           ws.send(JSON.stringify({ type: "HEARTBEAT", payload: { ping: "pong" } }));
         } else {
-          if (frame.type === "THOUGHT" || frame.type === "TOOL_CALL" || frame.type === "ARTIFACT") {
+          if (
+            frame.type === "THOUGHT" ||
+            frame.type === "TOOL_CALL" ||
+            frame.type === "ARTIFACT" ||
+            frame.type === "SUBAGENT"
+          ) {
             setStatus("thinking");
           }
           if (frame.type === "RESPONSE") {
@@ -220,37 +225,66 @@ export function useAgent(wsUrl: string) {
   }, [clearConnectionTimers, flushOutboundQueue, resetHeartbeatTimeout, scheduleFlush, wsUrl]);
 
   useEffect(() => {
-    try {
-      const hydrated = sessionStorage.getItem(getSessionStorageKey());
-      if (hydrated) {
-        const parsed = JSON.parse(hydrated) as AgentFrame[];
-        setFrames(parsed);
-        for (const frame of parsed) {
-          const list = traceBucketsRef.current.get(frame.trace_id) ?? [];
-          list.push(frame);
-          traceBucketsRef.current.set(frame.trace_id, list);
-        }
-      }
-    } catch {
-      // Ignore malformed storage.
+    let cancelled = false;
+    setHydrated(false);
+    setTurns([]);
+    lastSeqRef.current = -1;
+    lastResumeSeqRef.current = -1;
+    queueRef.current = [];
+    outboundQueueRef.current = [];
+
+    if (!sessionId) {
+      setHydrated(true);
+      return () => {
+        cancelled = true;
+      };
     }
+
+    void (async () => {
+      const loaded = await SessionManager.getTurns(sessionId);
+      if (cancelled) return;
+      setTurns(loaded);
+      lastSeqRef.current = maxSeqFromTurns(loaded);
+      setHydrated(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!hydrated || !sessionId) return;
     connect();
     return () => {
       clearConnectionTimers();
       wsRef.current?.close();
     };
-  }, [clearConnectionTimers, connect, getSessionStorageKey]);
+  }, [hydrated, sessionId, connect, clearConnectionTimers]);
 
   useEffect(() => {
-    persistFrames(frames);
-  }, [frames, persistFrames]);
+    if (!sessionId || !hydrated) return;
+    if (persistTimerRef.current !== null) window.clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = window.setTimeout(() => {
+      void SessionManager.putTurns(sessionId, turns);
+      void SessionManager.touchSessionFromTurns(sessionId, turns);
+    }, 320);
+    return () => {
+      if (persistTimerRef.current !== null) window.clearTimeout(persistTimerRef.current);
+    };
+  }, [sessionId, turns, hydrated]);
 
   const sendMessage = useCallback(
-    (message: string, history: Record<string, unknown>[] = []) => {
+    (message: string) => {
+      const trimmed = message.trim();
+      if (!trimmed) return;
+      const history = buildHistoryFromTurns(turnsRef.current, HISTORY_TURNS);
+      const pendingId = `${PENDING_TURN_PREFIX}${crypto.randomUUID()}`;
+      setTurns((prev) => [...prev, { turn_id: pendingId, user_text: trimmed, frames: [] }]);
       const payload = JSON.stringify({
         session_id: sessionIdRef.current,
         auth_token: AUTH_TOKEN,
-        message,
+        message: trimmed,
         history,
         resume_from_seq: null,
       });
@@ -267,16 +301,50 @@ export function useAgent(wsUrl: string) {
     [connect],
   );
 
-  const groupedFrames = useMemo(
-    () => Object.fromEntries(traceBucketsRef.current.entries()),
-    [frames],
+  const sendClarifyPick = useCallback(
+    (choice: string, userBubbleText: string) => {
+      const c = choice.trim();
+      if (!c) return;
+      const bubble = userBubbleText.trim() || c;
+      const history = buildHistoryFromTurns(turnsRef.current, HISTORY_TURNS);
+      const pendingId = `${PENDING_TURN_PREFIX}${crypto.randomUUID()}`;
+      setTurns((prev) => [...prev, { turn_id: pendingId, user_text: bubble, frames: [] }]);
+      const payload = JSON.stringify({
+        session_id: sessionIdRef.current,
+        auth_token: AUTH_TOKEN,
+        message: "",
+        history,
+        resume_from_seq: null,
+        clarify_pick: c,
+      });
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        outboundQueueRef.current.push(payload);
+        if (!isConnectingRef.current) connect();
+      } else {
+        wsRef.current.send(payload);
+      }
+      pendingResponseRef.current = true;
+      lastResumeSeqRef.current = -1;
+      setStatus("thinking");
+    },
+    [connect],
   );
+
+  const groupedFrames = useMemo(() => {
+    const m: Record<string, AgentFrame[]> = {};
+    for (const t of turns) {
+      m[t.turn_id] = t.frames;
+    }
+    return m;
+  }, [turns]);
 
   return {
     connected,
     error,
     frames,
+    turns,
     groupedFrames,
+    hydrated,
     debug: {
       lastSeq: lastSeqRef.current,
       resumeSent: lastResumeSeqRef.current,
@@ -289,6 +357,7 @@ export function useAgent(wsUrl: string) {
       canRunBenchmark: userScopesRef.current.has(SCOPE_BENCHMARK_RUN),
     },
     sendMessage,
+    sendClarifyPick,
     status,
   };
 }

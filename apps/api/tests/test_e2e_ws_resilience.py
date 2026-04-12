@@ -8,7 +8,6 @@ from typing import Any
 
 import jwt
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 
 
 def _load_main_module(tmp_path: Path):
@@ -108,11 +107,12 @@ def test_e2e_cross_connection_replay_same_session(tmp_path: Path):
                     }
                 )
             )
+            # Long-lived `/ws/agent`: read until the noop agent finishes (ERROR) without waiting for server close.
             seeded: list[dict[str, Any]] = []
-            while True:
-                try:
-                    seeded.append(ws_seed.receive_json())
-                except WebSocketDisconnect:
+            for _ in range(32):
+                f = ws_seed.receive_json()
+                seeded.append(f)
+                if f.get("type") == "ERROR":
                     break
 
         assert seeded, "seed connection should produce at least one frame"
@@ -131,10 +131,10 @@ def test_e2e_cross_connection_replay_same_session(tmp_path: Path):
                 )
             )
             replayed: list[dict[str, Any]] = []
-            while True:
-                try:
-                    replayed.append(ws_resume.receive_json())
-                except WebSocketDisconnect:
+            for _ in range(64):
+                f = ws_resume.receive_json()
+                replayed.append(f)
+                if f.get("type") == "STATUS" and f.get("payload", {}).get("state") == "idle":
                     break
 
     replay_seqs = [int(frame["seq"]) for frame in replayed if isinstance(frame.get("seq"), int)]

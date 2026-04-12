@@ -7,8 +7,11 @@ import { persist } from "zustand/middleware";
 type UiState = {
   traceOpen: boolean;
   locale: Locale;
+  sidebarCollapsed: boolean;
   setTraceOpen: (open: boolean) => void;
   setLocale: (locale: Locale) => void;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+  toggleSidebarCollapsed: () => void;
 };
 
 export const useUiStore = create<UiState>()(
@@ -16,12 +19,15 @@ export const useUiStore = create<UiState>()(
     (set) => ({
       traceOpen: true,
       locale: "zh",
+      sidebarCollapsed: false,
       setTraceOpen: (open) => set({ traceOpen: open }),
       setLocale: (locale) => set({ locale }),
+      setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
+      toggleSidebarCollapsed: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
     }),
     {
       name: "hermes-ui",
-      partialize: (state) => ({ locale: state.locale }),
+      partialize: (state) => ({ locale: state.locale, sidebarCollapsed: state.sidebarCollapsed }),
     },
   ),
 );

@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 
 import { useTranslations } from "@/hooks/use-translations";
-import type { AgentFrame } from "@/hooks/use-agent";
+import type { AgentFrame } from "@/types";
 
 const MarkdownPreview = dynamic(
   () => import("@/components/markdown-preview").then((mod) => mod.MarkdownPreview),

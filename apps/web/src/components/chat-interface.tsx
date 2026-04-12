@@ -2,13 +2,19 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import dynamic from "next/dynamic";
-import { Activity, ArrowDown, ArrowUp, LayoutGrid, MessageSquare, PanelRight, Sparkles } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, LayoutGrid, MessageSquare, PanelRight, Plus, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArtifactsPreview } from "@/components/artifacts-preview";
+import { ChatMarkdown } from "@/components/chat-markdown";
+import { ClarifyChoicePanel } from "@/components/clarify-choice-panel";
 import { ReasoningTrace } from "@/components/reasoning-trace";
+import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { useAgent } from "@/hooks/use-agent";
+import { useChatSession } from "@/hooks/use-chat-session";
 import { useTranslations } from "@/hooks/use-translations";
+import { clarifySessionKey, extractClarifyFromFrames, type ClarifyPrompt } from "@/lib/clarify-from-frames";
+import { aggregateAssistantFromFrames, isAssistantReplyInFlight } from "@/lib/conversation-history";
 
 const WS_URL = process.env.NEXT_PUBLIC_AGENT_WS_URL ?? "ws://localhost:8000/ws/agent";
 const DiagnosticsDrawer = dynamic(
@@ -23,13 +29,21 @@ type WorkspaceTab = "artifacts" | "reasoning" | "observability";
 
 export function ChatInterface() {
   const [message, setMessage] = useState("");
+  /** Maps `clarifySessionKey` → chosen label (user picked from TOOL_CALL clarify UI). */
+  const [clarifyAnswers, setClarifyAnswers] = useState<Record<string, string>>({});
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("artifacts");
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottomRef = useRef(true);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const { t, locale, setLocale } = useTranslations();
-  const { frames, sendMessage, status, connected, debug, permissions } = useAgent(WS_URL);
+  const { t } = useTranslations();
+  const { ready, sessionId, sessions, createSession, selectSession } = useChatSession();
+  const { frames, turns, sendMessage, sendClarifyPick, status, connected, debug, permissions, hydrated } = useAgent(
+    WS_URL,
+    {
+      sessionId,
+    },
+  );
   const prevStatusRef = useRef(status);
 
   const responseText = useMemo(
@@ -40,6 +54,8 @@ export function ChatInterface() {
         .join(""),
     [frames],
   );
+
+  const hasTranscript = turns.length > 0;
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const el = chatScrollRef.current;
@@ -58,7 +74,7 @@ export function ChatInterface() {
   useEffect(() => {
     if (!stickToBottomRef.current) return;
     scrollChatToBottom("auto");
-  }, [responseText, frames.length, status, scrollChatToBottom]);
+  }, [responseText, frames.length, turns.length, status, scrollChatToBottom]);
 
   useEffect(() => {
     if (status === "thinking" && prevStatusRef.current !== "thinking") {
@@ -96,15 +112,37 @@ export function ChatInterface() {
     requestAnimationFrame(() => scrollChatToBottom("smooth"));
   };
 
+  const onClarifySelect = useCallback(
+    (turnId: string, prompt: ClarifyPrompt, choice: string) => {
+      const key = clarifySessionKey(turnId, prompt);
+      stickToBottomRef.current = true;
+      setClarifyAnswers((prev) => ({ ...prev, [key]: choice }));
+      sendClarifyPick(choice, `关于「${prompt.question}」，我的选择是：${choice}`);
+      requestAnimationFrame(() => scrollChatToBottom("smooth"));
+      textareaRef.current?.focus();
+    },
+    [sendClarifyPick, scrollChatToBottom],
+  );
+
   const statusLabel =
     status === "thinking"
       ? t.states.thinking
       : status === "responding"
         ? t.states.responding
-        : t.states.idle;
+        : status === "waiting_clarify"
+          ? t.states.waitingClarify
+          : t.states.idle;
+
+  if (!ready) {
+    return (
+      <div className="hermes-grid flex h-full min-h-0 flex-1 items-center justify-center bg-[var(--bg-base)] text-sm text-zinc-500">
+        {t.labels.loadingChat}
+      </div>
+    );
+  }
 
   return (
-    <div className="hermes-grid relative z-[1] flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col overflow-hidden bg-[var(--bg-base)]">
+    <div className="hermes-grid relative z-[1] flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[var(--bg-base)]">
       {/* Header: minimal IDE-adjacent chrome */}
       <header className="sticky top-0 z-20 shrink-0 border-b border-[var(--border-hairline)] bg-[var(--bg-elevated)] backdrop-blur-md">
         <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4 px-3 py-2.5 md:px-5">
@@ -123,31 +161,6 @@ export function ChatInterface() {
 
           <div className="flex shrink-0 items-center gap-2 md:gap-3">
             <div
-              className="flex items-center gap-0.5 rounded-lg border border-[var(--border-hairline)] bg-black/20 p-0.5"
-              role="group"
-              aria-label={t.labels.language}
-            >
-              <button
-                type="button"
-                onClick={() => setLocale("zh")}
-                className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                  locale === "zh" ? "bg-white/[0.08] text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                中文
-              </button>
-              <button
-                type="button"
-                onClick={() => setLocale("en")}
-                className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                  locale === "en" ? "bg-white/[0.08] text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                EN
-              </button>
-            </div>
-
-            <div
               className={`flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium ${
                 connected
                   ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-400/90"
@@ -165,16 +178,40 @@ export function ChatInterface() {
       <main className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col overflow-hidden md:flex-row">
         {/* Center: conversation + ChatGPT composer */}
         <section className="flex min-h-0 min-w-0 flex-1 flex-col border-[var(--border-hairline)] bg-[var(--bg-canvas)] md:border-r">
-          <div className="flex shrink-0 items-center justify-between border-b border-[var(--border-hairline)] px-4 py-2.5 md:px-5">
-            <div className="flex items-center gap-2 text-[13px] font-medium text-zinc-300">
-              <MessageSquare className="h-3.5 w-3.5 text-zinc-500" aria-hidden />
-              {t.panes.chat}
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--border-hairline)] px-4 py-2.5 md:px-5">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <MessageSquare className="h-3.5 w-3.5 shrink-0 text-zinc-500" aria-hidden />
+              <span className="truncate text-[13px] font-medium text-zinc-300">{t.panes.chat}</span>
+              <button
+                type="button"
+                className="ml-1 inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border border-[var(--border-hairline)] bg-black/20 px-2 text-[11px] font-medium text-zinc-300 transition hover:border-[var(--border-strong)] hover:bg-white/[0.04] hover:text-zinc-100"
+                onClick={() => void createSession()}
+              >
+                <Plus className="h-3.5 w-3.5" aria-hidden />
+                <span className="hidden sm:inline">{t.labels.newChat}</span>
+              </button>
+              <label className="sr-only" htmlFor="hermes-chat-session-select">
+                {t.labels.chatSessions}
+              </label>
+              <select
+                id="hermes-chat-session-select"
+                className="hermes-input max-w-[min(100%,12rem)] rounded-lg border border-[var(--border-hairline)] bg-black/25 py-1.5 pl-2 pr-7 text-[11px] text-zinc-200"
+                value={sessionId}
+                onChange={(e) => selectSession(e.target.value)}
+                aria-label={t.labels.chatSessions}
+              >
+                {sessions.map((s) => (
+                  <option key={s.session_id} value={s.session_id}>
+                    {s.title || s.session_id.slice(0, 8)}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="flex items-center gap-2 text-[11px] text-zinc-500">
               <Activity className="h-3 w-3" aria-hidden />
               <span className="hidden sm:inline">{t.labels.connection}</span>
               <span className="rounded-md border border-[var(--border-hairline)] bg-black/20 px-2 py-0.5 font-mono text-[10px] text-zinc-400">
-                {statusLabel}
+                {!hydrated ? "…" : statusLabel}
               </span>
             </div>
           </div>
@@ -188,7 +225,7 @@ export function ChatInterface() {
               onScroll={onChatScroll}
               className="hermes-scrollbar h-full overflow-y-auto overflow-x-hidden overscroll-y-contain"
             >
-              <div className="mx-auto w-full max-w-2xl px-4 py-6 md:px-6">
+              <div className="mx-auto w-full max-w-2xl px-4 py-6 md:px-2">
                 <AnimatePresence mode="wait">
                   <motion.div
                     key={status}
@@ -204,8 +241,85 @@ export function ChatInterface() {
                   </motion.div>
                 </AnimatePresence>
 
-                {responseText ? (
-                  <div className="hermes-prose-chat whitespace-pre-wrap break-words">{responseText}</div>
+                {hasTranscript ? (
+                  <div className="space-y-8">
+                    {turns.map((turn, ti) => {
+                      const assistantText = aggregateAssistantFromFrames(turn.frames);
+                      const hasAssistantText = assistantText.trim().length > 0;
+                      const isLastTurn = ti === turns.length - 1;
+                      const clarify = extractClarifyFromFrames(turn.frames);
+                      const clarifyKey = clarify ? clarifySessionKey(turn.turn_id, clarify) : null;
+                      const answeredChoice = clarifyKey ? clarifyAnswers[clarifyKey] : undefined;
+
+                      const showLiveIndicator =
+                        isLastTurn &&
+                        connected &&
+                        (status === "thinking" ||
+                          (status === "responding" && isAssistantReplyInFlight(turn.frames)));
+
+                      const showAssistantColumn = Boolean(clarify) || hasAssistantText || showLiveIndicator;
+
+                      const showBubble = hasAssistantText || showLiveIndicator;
+                      const thinkingOnlyInBubble = showLiveIndicator && !hasAssistantText;
+                      const thinkingFooterInBubble = showLiveIndicator && hasAssistantText;
+
+                      return (
+                        <div key={turn.turn_id} className="space-y-4">
+                          {turn.user_text ? (
+                            <div className="flex justify-end" role="article" aria-label={t.labels.chatUser}>
+                              <div className="max-w-[min(100%,85%)] rounded-2xl rounded-br-md border border-[var(--border-hairline)] bg-zinc-800/85 px-4 py-2.5 text-[15px] leading-relaxed text-zinc-100 shadow-[0_1px_0_rgba(0,0,0,0.35)]">
+                                <p className="whitespace-pre-wrap break-words">{turn.user_text}</p>
+                              </div>
+                            </div>
+                          ) : null}
+                          {showAssistantColumn ? (
+                            <div className="flex justify-start gap-3" role="article" aria-label={t.labels.chatAssistant}>
+                              <div
+                                className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-[var(--border-hairline)] bg-zinc-800/60 text-zinc-400"
+                                aria-hidden
+                              >
+                                <Sparkles className="h-4 w-4" />
+                              </div>
+                              <div className="min-w-0 flex-1 space-y-3">
+                                {clarify ? (
+                                  <ClarifyChoicePanel
+                                    prompt={clarify}
+                                    answeredChoice={answeredChoice ?? null}
+                                    disabled={!connected}
+                                    onSelect={(choice) => onClarifySelect(turn.turn_id, clarify, choice)}
+                                    labels={{
+                                      clarifyPickOne: t.labels.clarifyPickOne,
+                                      clarifyFallbackHint: t.labels.clarifyFallbackHint,
+                                      clarifyYourChoice: t.labels.clarifyYourChoice,
+                                    }}
+                                  />
+                                ) : null}
+                                {showBubble ? (
+                                  <div
+                                    className={`hermes-assistant-bubble min-w-0 max-w-[min(100%,92%)] rounded-2xl rounded-bl-md border border-[var(--border-hairline)] px-4 py-3 text-left shadow-[0_1px_0_rgba(0,0,0,0.35)] backdrop-blur-[2px] ${
+                                      thinkingOnlyInBubble
+                                        ? "hermes-assistant-bubble--thinking-only"
+                                        : "bg-zinc-900/55"
+                                    }`}
+                                  >
+                                    {hasAssistantText ? <ChatMarkdown content={assistantText} /> : null}
+                                    {thinkingOnlyInBubble ? (
+                                      <ThinkingIndicator label={t.states.thinking} />
+                                    ) : null}
+                                    {thinkingFooterInBubble ? (
+                                      <div className="mt-3 border-t border-white/[0.06] pt-3">
+                                        <ThinkingIndicator label={t.states.continuing} compact />
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center py-16 text-center">
                     <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border-hairline)] bg-[var(--bg-sidebar)]">

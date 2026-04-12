@@ -6,7 +6,7 @@ import { ChevronDown, Wrench } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useTranslations } from "@/hooks/use-translations";
-import type { AgentFrame } from "@/hooks/use-agent";
+import type { AgentFrame } from "@/types";
 
 type Props =
   | {

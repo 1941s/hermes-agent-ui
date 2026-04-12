@@ -13,6 +13,7 @@ RUN apt-get update \
 COPY apps/api/requirements.txt /tmp/requirements.txt
 RUN python -m pip install --upgrade pip && pip install --no-cache-dir -r /tmp/requirements.txt
 
+COPY packages/skill-spec /app/packages/skill-spec
 COPY apps/api /app
 RUN useradd -u 10001 -m appuser && chown -R appuser:appuser /app
 USER 10001:10001

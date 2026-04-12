@@ -14,7 +14,10 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import sqlite3
+import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from threading import Thread
 from typing import Any, AsyncIterator
@@ -35,6 +38,9 @@ try:
     )
     from .config import SETTINGS
     from .prompt_service import PromptService
+    from .routers import insights as insights_router
+    from .routers import orchestration as orchestration_router
+    from .routers import skills as skills_router
     from .schema import (
         ErrorFrame,
         ErrorPayload,
@@ -43,10 +49,16 @@ try:
         ArtifactPayload,
         HeartbeatFrame,
         HeartbeatPayload,
+        MetaFrame,
+        MetaPayload,
+        OptimizationFrame,
+        OptimizationPayload,
         ResponseFrame,
         ResponsePayload,
         StatusFrame,
         StatusPayload,
+        SubagentFrame,
+        SubagentPayload,
         ThoughtFrame,
         ThoughtPayload,
         ToolCallFrame,
@@ -63,6 +75,9 @@ except ImportError:
     )
     from config import SETTINGS  # type: ignore
     from prompt_service import PromptService  # type: ignore
+    from routers import insights as insights_router  # type: ignore
+    from routers import orchestration as orchestration_router  # type: ignore
+    from routers import skills as skills_router  # type: ignore
     from schema import (  # type: ignore
         ErrorFrame,
         ErrorPayload,
@@ -71,10 +86,16 @@ except ImportError:
         ArtifactPayload,
         HeartbeatFrame,
         HeartbeatPayload,
+        MetaFrame,
+        MetaPayload,
+        OptimizationFrame,
+        OptimizationPayload,
         ResponseFrame,
         ResponsePayload,
         StatusFrame,
         StatusPayload,
+        SubagentFrame,
+        SubagentPayload,
         ThoughtFrame,
         ThoughtPayload,
         ToolCallFrame,
@@ -104,7 +125,8 @@ class HermesBootstrapError(RuntimeError):
 
 
 class NoopHermesService:
-    async def run(self, request: WsRequest) -> AsyncIterator[StreamEvent]:
+    async def run(self, request: WsRequest, *, user_id: str | None = None) -> AsyncIterator[StreamEvent]:
+        _ = user_id
         if request.message.strip():
             yield StreamEvent(
                 kind=FrameType.ERROR,
@@ -128,6 +150,12 @@ def _prime_provider_env() -> None:
     # Qwen / GPT / DeepSeek families use OpenAI-compatible APIs (not api.anthropic.com).
     if any(x in model_lower for x in ("qwen", "gpt-", "deepseek", "moonshot", "doubao")):
         os.environ["HERMES_PROVIDER"] = "openai"
+
+
+_clarify_lock = threading.Lock()
+# Session id → queue for user choice while `clarify` tool callback is blocked.
+_clarify_pending: dict[str, queue.Queue[str]] = {}
+CLARIFY_WAIT_SEC = int(os.getenv("HERMES_CLARIFY_TIMEOUT_SEC", "3600"))
 
 
 def _explicit_openai_client_kwargs() -> dict[str, str]:
@@ -175,12 +203,18 @@ class HermesServiceWrapper:
         except Exception as exc:  # pragma: no cover
             raise HermesBootstrapError("Failed to import Hermes AIAgent.") from exc
 
-    async def run(self, request: WsRequest) -> AsyncIterator[StreamEvent]:
-        queue: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
+    async def run(self, request: WsRequest, *, user_id: str | None = None) -> AsyncIterator[StreamEvent]:
+        # Must not name this `queue` — it shadows `import queue` and breaks
+        # `queue.Queue` / `queue.Empty` inside `clarify_callback`.
+        event_out: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
         def emit(kind: FrameType, payload: dict[str, Any]) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, StreamEvent(kind=kind, payload=payload))
+            async def _put(ev: StreamEvent) -> None:
+                await event_out.put(ev)
+
+            fut = asyncio.run_coroutine_threadsafe(_put(StreamEvent(kind=kind, payload=payload)), loop)
+            fut.result(timeout=120)
 
         def worker() -> None:
             def clamp_artifact_content(raw: str) -> tuple[str, bool, int]:
@@ -247,6 +281,20 @@ class HermesServiceWrapper:
                         "result": result,
                     },
                 )
+                if user_id:
+                    try:
+                        try:
+                            from .sidecar_store import increment_tool_metric
+                        except ImportError:
+                            from sidecar_store import increment_tool_metric  # type: ignore
+
+                        err_like = isinstance(result, str) and (
+                            result.strip().upper().startswith("ERROR")
+                            or "traceback" in result.lower()
+                        )
+                        increment_tool_metric(user_id, name, success=not err_like)
+                    except Exception:  # pragma: no cover
+                        LOGGER.debug("increment_tool_metric failed", exc_info=True)
                 result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
                 safe_content, truncated, original_length = clamp_artifact_content(result_text)
                 artifact_type, mime = classify_artifact(result_text)
@@ -280,6 +328,39 @@ class HermesServiceWrapper:
                 if text:
                     emit(FrameType.RESPONSE, {"content": text, "role": "assistant", "final": False})
 
+            def clarify_callback(question: str, choices: list[str] | None) -> str:
+                sid = request.session_id
+                with _clarify_lock:
+                    if sid in _clarify_pending:
+                        return json.dumps(
+                            {"error": "Another clarify is already waiting for this session."},
+                            ensure_ascii=False,
+                        )
+                    q: queue.Queue[str] = queue.Queue(maxsize=4)
+                    _clarify_pending[sid] = q
+                _ = (question, choices)
+                try:
+                    emit(
+                        FrameType.STATUS,
+                        {
+                            "state": "waiting_clarify",
+                            "message": "请在界面中点选一项以继续…",
+                        },
+                    )
+                    if CLARIFY_WAIT_SEC <= 0:
+                        pick = q.get()
+                    else:
+                        pick = q.get(timeout=float(CLARIFY_WAIT_SEC))
+                    return pick
+                except queue.Empty:
+                    return json.dumps(
+                        {"error": "Timed out waiting for clarify selection."},
+                        ensure_ascii=False,
+                    )
+                finally:
+                    with _clarify_lock:
+                        _clarify_pending.pop(sid, None)
+
             try:
                 agent_kw: dict[str, Any] = {
                     "model": os.getenv("HERMES_MODEL", "gpt-4o-mini"),
@@ -287,6 +368,8 @@ class HermesServiceWrapper:
                     "tool_start_callback": tool_start_callback,
                     "tool_complete_callback": tool_complete_callback,
                     "stream_delta_callback": stream_delta_callback,
+                    "clarify_callback": clarify_callback,
+                    "platform": "web",
                     "quiet_mode": True,
                 }
                 agent_kw.update(_explicit_openai_client_kwargs())
@@ -294,7 +377,7 @@ class HermesServiceWrapper:
                 result = agent.run_conversation(
                     user_message=request.message,
                     system_message=request.system_prompt,
-                    conversation_history=request.history,
+                    conversation_history=[h.model_dump() for h in request.history],
                 )
                 final_text = result.get("final_response", "") if isinstance(result, dict) else str(result)
                 emit(FrameType.RESPONSE, {"content": final_text, "role": "assistant", "final": True})
@@ -304,18 +387,27 @@ class HermesServiceWrapper:
                     {"code": "AGENT_RUNTIME_ERROR", "message": str(exc), "detail": {"type": type(exc).__name__}},
                 )
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                async def _end() -> None:
+                    await event_out.put(None)
+
+                try:
+                    asyncio.run_coroutine_threadsafe(_end(), loop).result(timeout=30)
+                except Exception:  # pragma: no cover
+                    loop.call_soon_threadsafe(event_out.put_nowait, None)
 
         Thread(target=worker, daemon=True).start()
 
         while True:
-            event = await queue.get()
+            event = await event_out.get()
             if event is None:
                 break
             yield event
 
 
 app = FastAPI(title="Hermes Agent API", version="0.1.0")
+app.include_router(insights_router.router)
+app.include_router(skills_router.router)
+app.include_router(orchestration_router.router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -401,6 +493,34 @@ def _to_ws_frame(
             seq=seq,
             payload=ErrorPayload(**_normalize_error_event_payload(event.payload)),
         )
+    elif event.kind == FrameType.OPTIMIZATION:
+        frame = OptimizationFrame(
+            session_id=session_id,
+            trace_id=trace_id,
+            seq=seq,
+            payload=OptimizationPayload(**event.payload),
+        )
+    elif event.kind == FrameType.SUBAGENT:
+        frame = SubagentFrame(
+            session_id=session_id,
+            trace_id=trace_id,
+            seq=seq,
+            payload=SubagentPayload(**event.payload),
+        )
+    elif event.kind == FrameType.META:
+        frame = MetaFrame(
+            session_id=session_id,
+            trace_id=trace_id,
+            seq=seq,
+            payload=MetaPayload(**event.payload),
+        )
+    elif event.kind == FrameType.STATUS:
+        frame = StatusFrame(
+            session_id=session_id,
+            trace_id=trace_id,
+            seq=seq,
+            payload=StatusPayload(**event.payload),
+        )
     else:
         frame = StatusFrame(
             session_id=session_id,
@@ -443,6 +563,13 @@ def _init_db() -> None:
             )
             """
         )
+        try:
+            from .sidecar_store import init_sidecar_tables, seed_demo_data
+        except ImportError:
+            from sidecar_store import init_sidecar_tables, seed_demo_data  # type: ignore
+
+        init_sidecar_tables(conn)
+        seed_demo_data(conn)
 
 
 def _persist_frame(session_id: str, frame: dict[str, Any]) -> None:
@@ -640,6 +767,20 @@ async def replay_stats(current_user: AuthContext = Depends(get_current_user)) ->
 async def ws_agent(websocket: WebSocket) -> None:
     await websocket.accept()
     heartbeat_task: asyncio.Task[None] | None = None
+    # Must not block on `service.run` while holding the only `receive_text()` — otherwise
+    # `clarify_pick` can never be read and the clarify callback times out or deadlocks.
+    incoming: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def ws_reader() -> None:
+        try:
+            while True:
+                await incoming.put(await websocket.receive_text())
+        except WebSocketDisconnect:
+            await incoming.put(None)
+        except Exception:
+            await incoming.put(None)
+
+    reader_task = asyncio.create_task(ws_reader())
 
     async def send_heartbeat(session_id: str, trace_id: str) -> None:
         seq = 0
@@ -666,6 +807,79 @@ async def ws_agent(websocket: WebSocket) -> None:
             payload=ErrorPayload(code=code, message=message, detail=detail),
         )
         await websocket.send_text(json.dumps(frame.model_dump(mode="json")))
+
+    async def consume_agent_stream(req: WsRequest, user_id: str, trace_id: str, seq: int) -> int:
+        """Stream `service.run` while still dequeuing `clarify_pick` / control messages from `incoming`."""
+        agen = service.run(req, user_id=user_id).__aiter__()
+        ev_task = asyncio.create_task(agen.__anext__())
+        while True:
+            msg_task = asyncio.create_task(incoming.get())
+            done, _ = await asyncio.wait({ev_task, msg_task}, return_when=asyncio.FIRST_COMPLETED)
+            if ev_task in done:
+                msg_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await msg_task
+                try:
+                    event = ev_task.result()
+                except StopAsyncIteration:
+                    break
+                frame = _to_ws_frame(req.session_id, trace_id, seq, event)
+                seq += 1
+                await send_and_store(req.session_id, frame)
+                ev_task = asyncio.create_task(agen.__anext__())
+            else:
+                raw_inc = msg_task.result()
+                if raw_inc is None:
+                    ev_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await ev_task
+                    raise WebSocketDisconnect()
+                try:
+                    data = json.loads(raw_inc)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(data, dict) and data.get("type") == "HEARTBEAT":
+                    continue
+                try:
+                    req_inc = WsRequest.model_validate(data)
+                except ValidationError:
+                    continue
+                pick = (req_inc.clarify_pick or "").strip()
+                if not pick:
+                    await send_ws_error(
+                        req.session_id,
+                        "AGENT_BUSY",
+                        "Agent is still running; only clarify_pick is allowed until the turn completes.",
+                    )
+                    continue
+                try:
+                    auth_inc = get_current_user(auth_token=req_inc.auth_token, authorization=None)
+                except HTTPException as http_exc:
+                    detail = http_exc.detail
+                    code = detail if isinstance(detail, str) else "AUTH_FAILED"
+                    await send_ws_error(req_inc.session_id, code, "Authentication failed")
+                    continue
+                if auth_inc.user_id != user_id or req_inc.session_id != req.session_id:
+                    await send_ws_error(req.session_id, "SESSION_FORBIDDEN", "Session mismatch for clarify_pick")
+                    continue
+                if not _bind_or_verify_session_owner(req_inc.session_id, auth_inc.user_id):
+                    await send_ws_error(req.session_id, "SESSION_FORBIDDEN", "Session owner mismatch")
+                    continue
+                with _clarify_lock:
+                    q = _clarify_pending.get(req.session_id)
+                if q is None:
+                    await send_ws_error(
+                        req.session_id,
+                        "NO_PENDING_CLARIFY",
+                        "No clarify is waiting for this session.",
+                    )
+                    continue
+                try:
+                    q.put_nowait(pick)
+                except queue.Full:
+                    await send_ws_error(req.session_id, "CLARIFY_OVERFLOW", "Clarify queue full.")
+                continue
+        return seq
 
     async def run_benchmark_stream(session_id: str, trace_id: str, seq_start: int) -> int:
         seq = seq_start
@@ -705,93 +919,134 @@ async def ws_agent(websocket: WebSocket) -> None:
         return seq
 
     try:
-        raw = await websocket.receive_text()
-        req = WsRequest.model_validate_json(raw)
-        try:
-            auth_ctx = get_current_user(auth_token=req.auth_token, authorization=None)
-            user_id = auth_ctx.user_id
-        except HTTPException as http_exc:
-            await send_ws_error(req.session_id, str(http_exc.detail), "Authentication failed")
-            return
-        if not _bind_or_verify_session_owner(req.session_id, user_id):
-            await send_ws_error(req.session_id, "SESSION_FORBIDDEN", "Session owner mismatch")
-            return
-        trace_id = str(uuid4())
-        seq = _next_seq_for_session(req.session_id)
-
-        if req.resume_from_seq is not None:
-            replay_frames = _load_frames_after_seq(req.session_id, req.resume_from_seq)
-            if replay_frames:
-                RUNTIME_COUNTERS["replay_hits"] += 1
-            else:
-                RUNTIME_COUNTERS["replay_misses"] += 1
-            for replay in replay_frames:
-                await websocket.send_text(json.dumps(replay))
-
-            if not req.message.strip():
-                idle_frame = StatusFrame(
-                    session_id=req.session_id,
-                    trace_id=trace_id,
-                    seq=seq,
-                    payload=StatusPayload(
-                        state="idle",
-                        message=prompt_service.render("agent/replay_completed_status.j2"),
-                    ),
-                ).model_dump(mode="json")
-                await websocket.send_text(json.dumps(idle_frame))
-                return
-
-        if req.message.strip().startswith("/benchmark"):
+        while True:
+            raw = await incoming.get()
+            if raw is None:
+                break
             try:
-                require_scope(auth_ctx, SCOPE_BENCHMARK_RUN)
-            except HTTPException:
-                await send_ws_error(
-                    req.session_id,
-                    "FORBIDDEN_SCOPE",
-                    "Missing required scope",
-                    {"required_scope": SCOPE_BENCHMARK_RUN},
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                await send_ws_error("unknown", "BAD_JSON", "Invalid JSON body")
+                continue
+
+            if isinstance(data, dict) and data.get("type") == "HEARTBEAT":
+                continue
+
+            try:
+                req = WsRequest.model_validate(data)
+            except ValidationError as exc:
+                sid = data.get("session_id", "unknown") if isinstance(data, dict) else "unknown"
+                frame = ErrorFrame(
+                    session_id=str(sid),
+                    trace_id=str(uuid4()),
+                    seq=0,
+                    payload=ErrorPayload(
+                        code="BAD_REQUEST",
+                        message=prompt_service.render("errors/bad_request.j2"),
+                        detail={"errors": exc.errors(include_url=False)},
+                    ),
                 )
+                try:
+                    await websocket.send_text(json.dumps(frame.model_dump(mode="json")))
+                except (RuntimeError, WebSocketDisconnect):
+                    pass
+                continue
+
+            try:
+                auth_ctx = get_current_user(auth_token=req.auth_token, authorization=None)
+                user_id = auth_ctx.user_id
+            except HTTPException as http_exc:
+                detail = http_exc.detail
+                code = detail if isinstance(detail, str) else "AUTH_FAILED"
+                await send_ws_error(req.session_id, code, "Authentication failed")
                 return
-            RUNTIME_COUNTERS["benchmark_sessions"] += 1
-            await run_benchmark_stream(req.session_id, trace_id, seq)
-            return
 
-        thinking_frame = StatusFrame(
-            session_id=req.session_id,
-            trace_id=trace_id,
-            seq=seq,
-            payload=StatusPayload(
-                state="thinking",
-                message=prompt_service.render("agent/think_status.j2"),
-            ),
-        ).model_dump(mode="json")
-        await send_and_store(req.session_id, thinking_frame)
-        seq += 1
+            if not _bind_or_verify_session_owner(req.session_id, user_id):
+                await send_ws_error(req.session_id, "SESSION_FORBIDDEN", "Session owner mismatch")
+                return
 
-        heartbeat_task = asyncio.create_task(send_heartbeat(req.session_id, trace_id))
+            pick = (req.clarify_pick or "").strip()
+            if pick:
+                with _clarify_lock:
+                    q = _clarify_pending.get(req.session_id)
+                if q is None:
+                    await send_ws_error(
+                        req.session_id,
+                        "NO_PENDING_CLARIFY",
+                        "No clarify is waiting for this session.",
+                    )
+                    continue
+                try:
+                    q.put_nowait(pick)
+                except queue.Full:
+                    await send_ws_error(req.session_id, "CLARIFY_OVERFLOW", "Clarify queue full.")
+                continue
 
-        async for event in service.run(req):
-            frame = _to_ws_frame(req.session_id, trace_id, seq, event)
+            trace_id = str(uuid4())
+            seq = _next_seq_for_session(req.session_id)
+
+            if req.resume_from_seq is not None:
+                replay_frames = _load_frames_after_seq(req.session_id, req.resume_from_seq)
+                if replay_frames:
+                    RUNTIME_COUNTERS["replay_hits"] += 1
+                else:
+                    RUNTIME_COUNTERS["replay_misses"] += 1
+                for replay in replay_frames:
+                    await websocket.send_text(json.dumps(replay))
+
+                if not req.message.strip():
+                    idle_frame = StatusFrame(
+                        session_id=req.session_id,
+                        trace_id=trace_id,
+                        seq=seq,
+                        payload=StatusPayload(
+                            state="idle",
+                            message=prompt_service.render("agent/replay_completed_status.j2"),
+                        ),
+                    ).model_dump(mode="json")
+                    await websocket.send_text(json.dumps(idle_frame))
+                    continue
+
+            if req.message.strip().startswith("/benchmark"):
+                try:
+                    require_scope(auth_ctx, SCOPE_BENCHMARK_RUN)
+                except HTTPException:
+                    await send_ws_error(
+                        req.session_id,
+                        "FORBIDDEN_SCOPE",
+                        "Missing required scope",
+                        {"required_scope": SCOPE_BENCHMARK_RUN},
+                    )
+                    continue
+                RUNTIME_COUNTERS["benchmark_sessions"] += 1
+                await run_benchmark_stream(req.session_id, trace_id, seq)
+                continue
+
+            if heartbeat_task is not None and not heartbeat_task.done():
+                heartbeat_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat_task
+                heartbeat_task = None
+
+            thinking_frame = StatusFrame(
+                session_id=req.session_id,
+                trace_id=trace_id,
+                seq=seq,
+                payload=StatusPayload(
+                    state="thinking",
+                    message=prompt_service.render("agent/think_status.j2"),
+                ),
+            ).model_dump(mode="json")
+            await send_and_store(req.session_id, thinking_frame)
             seq += 1
-            await send_and_store(req.session_id, frame)
+
+            heartbeat_task = asyncio.create_task(send_heartbeat(req.session_id, trace_id))
+
+            await consume_agent_stream(req, user_id, trace_id, seq)
     except WebSocketDisconnect:
         LOGGER.info("WebSocket disconnected.")
-    except ValidationError as exc:
-        frame = ErrorFrame(
-            session_id="unknown",
-            trace_id=str(uuid4()),
-            seq=0,
-            payload=ErrorPayload(
-                code="BAD_REQUEST",
-                message=prompt_service.render("errors/bad_request.j2"),
-                detail={"errors": exc.errors(include_url=False)},
-            ),
-        )
-        try:
-            await websocket.send_text(json.dumps(frame.model_dump(mode="json")))
-        except (RuntimeError, WebSocketDisconnect):
-            pass
     except Exception as exc:
+        LOGGER.exception("WebSocket handler error: %s", exc)
         frame = ErrorFrame(
             session_id="unknown",
             trace_id=str(uuid4()),
@@ -807,10 +1062,12 @@ async def ws_agent(websocket: WebSocket) -> None:
         except (RuntimeError, WebSocketDisconnect):
             pass
     finally:
-        if heartbeat_task:
+        reader_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await reader_task
+        if heartbeat_task is not None:
             heartbeat_task.cancel()
-        try:
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+        with suppress(RuntimeError):
             await websocket.close()
-        except RuntimeError:
-            # Already closed or ASGI response completed (e.g. client disconnected first).
-            pass

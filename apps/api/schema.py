@@ -23,6 +23,9 @@ class FrameType(str, Enum):
     HEARTBEAT = "HEARTBEAT"
     ERROR = "ERROR"
     STATUS = "STATUS"
+    OPTIMIZATION = "OPTIMIZATION"
+    SUBAGENT = "SUBAGENT"
+    META = "META"
 
 
 class BaseFrame(BaseModel):
@@ -87,8 +90,36 @@ class ErrorPayload(BaseModel):
 class StatusPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    state: Literal["thinking", "responding", "idle", "disconnected"]
+    state: Literal["thinking", "responding", "idle", "disconnected", "waiting_clarify"]
     message: str | None = None
+
+
+class OptimizationPayload(BaseModel):
+    """Policy update suitable for Git-style diff UI (removed = red, added = green)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    kind: Literal["rule_replace", "preference_update"]
+    removed: list[str] = Field(default_factory=list)
+    added: list[str] = Field(default_factory=list)
+    rationale: str | None = None
+    session_ref: str | None = None
+
+
+class SubagentPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    subagent_id: str
+    parent_id: str | None = None
+    label: str = ""
+    status: Literal["idle", "thinking", "done", "error"] = "idle"
+
+
+class MetaPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    kind: str
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class ThoughtFrame(BaseFrame):
@@ -126,6 +157,21 @@ class StatusFrame(BaseFrame):
     payload: StatusPayload
 
 
+class OptimizationFrame(BaseFrame):
+    type: Literal[FrameType.OPTIMIZATION] = FrameType.OPTIMIZATION
+    payload: OptimizationPayload
+
+
+class SubagentFrame(BaseFrame):
+    type: Literal[FrameType.SUBAGENT] = FrameType.SUBAGENT
+    payload: SubagentPayload
+
+
+class MetaFrame(BaseFrame):
+    type: Literal[FrameType.META] = FrameType.META
+    payload: MetaPayload
+
+
 AgentFrame = Annotated[
     Union[
         ThoughtFrame,
@@ -135,9 +181,46 @@ AgentFrame = Annotated[
         HeartbeatFrame,
         ErrorFrame,
         StatusFrame,
+        OptimizationFrame,
+        SubagentFrame,
+        MetaFrame,
     ],
     Field(discriminator="type"),
 ]
+
+
+class ConversationHistoryMessage(BaseModel):
+    """OpenAI-style message for `WsRequest.history` (aligned with web `ConversationHistoryMessage`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant", "system"]
+    content: str
+
+
+class ChatTurn(BaseModel):
+    """One user round: id matches `trace_id` on frames for that turn (web + API contract)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn_id: str = Field(..., description="Same as AgentFrame.trace_id once assigned.")
+    user_text: str = ""
+    frames: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Serialized AgentFrame JSON objects for this turn.",
+    )
+
+
+class ChatSessionMeta(BaseModel):
+    """Session list row — timestamps as Unix ms to match the web client."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    title: str = ""
+    created_at: int = 0
+    updated_at: int = 0
+    preview: str = ""
 
 
 class WsRequest(BaseModel):
@@ -146,6 +229,8 @@ class WsRequest(BaseModel):
     session_id: str
     auth_token: str | None = None
     message: str = ""
-    history: list[dict[str, Any]] = Field(default_factory=list)
+    history: list[ConversationHistoryMessage] = Field(default_factory=list)
     system_prompt: str | None = None
     resume_from_seq: int | None = None
+    #: Delivered on the same WebSocket while `clarify` tool is blocked waiting for UI input.
+    clarify_pick: str | None = None

@@ -21,6 +21,11 @@ class AuthContext:
 
 SCOPE_ADMIN_STATS_READ = "admin:stats:read"
 SCOPE_BENCHMARK_RUN = "benchmark:run"
+SCOPE_INSIGHTS_READ = "insights:read"
+SCOPE_SKILLS_READ = "skills:read"
+SCOPE_SKILLS_WRITE = "skills:write"
+SCOPE_ORCHESTRATION_READ = "orchestration:read"
+SCOPE_SESSIONS_FORK = "sessions:fork"
 
 
 def _parse_scopes(claims: dict[str, Any]) -> set[str]:

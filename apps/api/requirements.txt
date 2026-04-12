@@ -6,3 +6,4 @@ hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git
 jinja2==3.1.6
 pytest==8.3.5
 PyJWT==2.12.0
+jsonschema==4.25.1
