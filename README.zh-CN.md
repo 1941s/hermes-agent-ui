@@ -1,6 +1,6 @@
 # Hermes-Agent：面向高性能 LLM 编排的工业级 Web UI
 
-> **面向 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 的生产级参考实现** —— 为需要在 **生产环境** 落地 Hermes Agent、且不愿在 **延迟**、**安全** 与 **交付速度** 之间妥协的团队而设计。（规范与接口说明以英文 [README.md](README.md) 为 SSOT。）
+> **面向 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 的生产级参考实现** —— 为需要在 **生产环境** 落地 Hermes Agent、且不愿在 **延迟**、**安全** 与 **交付速度** 之间妥协的团队而设计。本文与英文 [README.md](README.md) 同步维护；下表对 **已交付 / 预览 / 占位** 能力做诚实标注，便于 GitHub 访客建立正确预期（规范与接口以英文 README 为 SSOT）。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Build](https://img.shields.io/badge/build-GitHub%20Actions-lightgrey.svg)](#可靠性与-ci-证据)
@@ -16,11 +16,16 @@
 - **产品级 Shell 与交互** —— **App Shell** 多区域 Hub（对话 / 洞察 / 技能 / 编排）、**IndexedDB** 多会话与历史恢复、与上游契约一致的 **`clarify` 同连接阻塞点选**（`clarify_pick` + 长连接合并调度）。
 - **一键部署** —— **Docker Compose** 双 profile：**Demo**（快速惊艳）与 **Prod**（**默认安全**：非 root、内网数据面、健康检查串联启动）。
 
+## 预览图
+
+![ScreenShot_2026-04-12_161840_012](F:\desktop\hermes-agent-ui\assets\ScreenShot_2026-04-12_161840_012.png)
+
 ---
 
 ## 目录
 
 - [为何选择 Hermes-Agent UI](#为何选择-hermes-agent-ui)
+- [功能就绪度（已交付 vs 预览）](#功能就绪度已交付-vs-预览)
 - [三分钟上手](#三分钟上手)
 - [性能与合规](#性能与合规)
 - [架构](#架构)
@@ -62,38 +67,109 @@
 
 ### 产品 Shell、侧车 API 与交互式 `clarify`
 
-- **App Shell**（Next.js App Router）：侧栏导航至 **对话 / 洞察 / 技能 / 编排**，以 **可扩展 Hub** 形态交付，而非单页演示。
-- **侧车 HTTP API**：`apps/api/routers/` 下 FastAPI 路由（洞察、技能目录/安装、编排等占位与实现以代码为准），部分能力配合 SQLite 侧车存储。
+- **App Shell**（Next.js App Router）：侧栏导航至 **对话 / 洞察 / 技能 / 编排**。**对话**为生产主路径；**编排**为 **预览/Mock** 语义，**技能沙箱运行**为 **占位**，详见 [功能就绪度](#功能就绪度已交付-vs-预览)。
+- **侧车 HTTP API**：`apps/api/routers/` 下 FastAPI 路由（洞察、技能目录/安装、编排等），部分能力配合 SQLite 侧车存储。
 - **`clarify` 工具（对齐上游）**：模型调用 `clarify` 时，服务端在 **同一条 `/ws/agent` 连接**上阻塞 Hermes 回调，直到用户通过 **`clarify_pick`** 提交选择（后台读队列 + 与 agent 流 **合并等待**，避免饿死点选）。界面可展示 **`STATUS`（`waiting_clarify`）**。可选 **`HERMES_CLARIFY_TIMEOUT_SEC`**（默认 `3600`；`≤0` 表示无限等待）。
 - **`packages/skill-spec`**：供 Skills 界面与校验使用的 `skill.json` JSON Schema 与说明文档。
 
 ---
 
+## 功能就绪度（已交付 vs 预览）
+
+以下表格便于 issue 分类与二次开发规划。**「预览」** 表示界面与 API 已接通，但该领域 **尚未** 作为独立商业产品完整交付。
+
+| 模块 | 状态 | 说明 |
+| --- | --- | --- |
+| **对话** — WebSocket 流式、回放、产物、HTML 沙箱 | **开发中** | 主路径，对齐上游 **hermes-agent** 工具契约。 |
+| **IndexedDB** 多会话 | **开发中** | 浏览器侧多会话历史；服务端回放仍按属主隔离。 |
+| **洞察** Hub | **开发中** | REST（`/insights/...`）已接线；数据随 Agent 使用逐步累积。 |
+| **技能** Hub — 目录、安装、JSON Schema 校验 | **开发中** | 与 API 端到端可用。 |
+| **技能** — 编辑器 / 「沙箱运行」| **开发中**  | 当前为 **stub**，无真实隔离；以界面文案为准。 |
+| **编排** Hub — 任务图、Time Travel、Fork | **预览** | **Mock / 启发式** 演示快照，用于 UX 与概念验证 —— **不是**完整分布式编排引擎。 |
+
+---
+
 ## 三分钟上手
 
-> **目标：** 三分钟内打开 UI，点击 **Demo Templates**，看到 **回复 + 推理 + 产物** —— 无需折腾环境。
+> **目标：** 从干净克隆到 **可对话**：健康检查通过、LLM 已配置，发送一条消息即可看到 **推理 Trace + Artifacts** 流式更新（镜像构建完成后约三分钟可完成）。
 
-### 方案 A —— Demo 模式（零摩擦，关闭鉴权）
+### 前置条件
+
+- 已安装 **Docker Desktop**（或 Docker Engine）与 **Docker Compose v2**
+- 已安装 **Git**
+- 可用的 **OpenAI 兼容 API Key**（OpenAI、Azure OpenAI、通义兼容网关等）。API 容器读取 **`apps/api/.env`**；未配置真实密钥时，模型调用可能无法按预期工作。
+
+### 方案 A —— Docker Compose `demo` 配置（首次运行推荐）
+
+在**仓库根目录**执行：
 
 ```bash
-cp .env.example.docker .env && docker compose --profile demo up --build
+git clone <repository-url>
+cd hermes-agent-ui
+
+# 1）Compose 与构建参数（镜像源、profile 等）
+cp .env.example.docker .env
+
+# 2）API 运行时 —— 真实 LLM 调用所必需（Compose 会挂载此文件）
+cp apps/api/.env.example apps/api/.env
+# 编辑 apps/api/.env：填写 OPENAI_API_KEY（若用通义等则设置 OPENAI_BASE_URL）
+# HERMES_PROVIDER / HERMES_MODEL 需与厂商一致。
+
+# 3）构建并启动（api-demo + web-demo；demo 下关闭鉴权）
+docker compose --profile demo up --build
 ```
 
-然后：
+待 **`hermes-api-demo`** 在 Compose 中显示为 **`healthy`** 后：
 
-1. 打开 **`http://localhost:3000`**
-2. 使用侧栏在 **对话** 与 **洞察 / 技能 / 编排** Hub 间切换（默认从对话体验起）。
-3. 在输入框下方点击任意 **Demo Templates**，观察 **推理 Trace** 与 **Artifacts** 面板实时更新。
+1. **冒烟测试 API：** 浏览器打开 **`http://localhost:8000/health`**，应返回 `{"ok": true}`。
+2. **打开 UI：** **`http://localhost:3000`**，侧栏进入 **对话**（主能力）。
+3. 在输入框下点击 **Demo Templates** 任一模板，**或** 自行输入短提示并发送 —— **推理 Trace** 与 **Artifacts** 应实时更新。
 
-**端点**
+**端口（demo）**
 
 | 用途 | URL |
 | --- | --- |
 | Web UI | `http://localhost:3000` |
 | API 健康检查 | `http://localhost:8000/health` |
-| Agent WebSocket | `ws://localhost:8000/ws/agent` |
+| Agent WebSocket（浏览器连接） | `ws://localhost:8000/ws/agent` |
 
-### 方案 B —— 生产模式（默认安全）
+**Hub 路由：** **洞察 / 技能 / 编排** 均可进入；编排侧为 **演示/ Mock 语义**，见 [功能就绪度](#功能就绪度已交付-vs-预览)。
+
+**排错（demo）**
+
+- **Web 一直不健康：** 等待 **`api-demo` 为 healthy**（`docker compose ps`）；查看 **`docker compose logs api-demo`**。
+- **对话无回复或一直转圈：** 确认已创建 **`apps/api/.env`** 且 **`OPENAI_API_KEY`** 有效、**`HERMES_MODEL`** 与厂商一致；查看 API 日志是否出现 LLM 401/404。
+- **端口占用：** 释放本机 **3000** / **8000** 或在 `docker-compose.yml` 中调整宿主机端口映射。
+
+### 方案 B —— 本地开发（双终端，无 Docker）
+
+适合频繁改 UI/API、避免反复构建镜像。
+
+**终端 1 —— API**
+
+```bash
+cd apps/api
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Windows PowerShell: Copy-Item .env.example .env
+# 编辑 .env：OPENAI_API_KEY、可选 OPENAI_BASE_URL、HERMES_MODEL 等
+# 本地快速联调可将 HERMES_UI_AUTH_ENABLED=0，与 demo 行为一致。
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**终端 2 —— Web（仓库根目录）**
+
+```bash
+pnpm install
+pnpm dev:web
+```
+
+确认 **`NEXT_PUBLIC_AGENT_WS_URL`**（及可选 **`NEXT_PUBLIC_AGENT_HTTP_URL`**）指向 API，默认分别为 `ws://localhost:8000/ws/agent` 与 `http://localhost:8000`。浏览器打开终端提示的地址（一般为 **`http://localhost:3000`**）。
+
+### 方案 C —— 生产模式（默认安全）
 
 > 面向 **DevOps / SRE**：**JWT 开启**，**Postgres + Redis** 位于 **Docker 内部网络**，**API/Web** 仅在你期望的位置暴露。
 
@@ -320,4 +396,4 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ## 许可证
 
-MIT —— 若仓库根目录尚无 `LICENSE` 文件，请在公开发布前补齐。与 [English README](README.md#license) 一致。
+MIT

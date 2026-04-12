@@ -20,6 +20,8 @@ type NavItem = {
   label: string;
   icon: typeof MessageSquare;
   match: (path: string) => boolean;
+  /** Show “开发中 / In development” badge (hub areas not finalized). */
+  inDevelopment?: boolean;
 };
 
 export function AppSidebar() {
@@ -42,18 +44,21 @@ export function AppSidebar() {
       label: h.nav.insights,
       icon: BarChart3,
       match: (p) => p === "/insights" || p.startsWith("/insights/"),
+      inDevelopment: true,
     },
     {
       href: "/skills",
       label: h.nav.skills,
       icon: Package,
       match: (p) => p === "/skills" || p.startsWith("/skills/"),
+      inDevelopment: true,
     },
     {
       href: "/orchestration",
       label: h.nav.orchestration,
       icon: GitBranch,
       match: (p) => p === "/orchestration" || p.startsWith("/orchestration/"),
+      inDevelopment: true,
     },
   ];
 
@@ -90,11 +95,12 @@ export function AppSidebar() {
         {items.map((item) => {
           const active = item.match(pathname);
           const Icon = item.icon;
+          const devTitle = item.inDevelopment ? `${item.label} — ${sb.navDevBadge}` : item.label;
           return (
             <Link
               key={item.href}
               href={item.href}
-              title={sidebarCollapsed ? item.label : undefined}
+              title={sidebarCollapsed ? devTitle : undefined}
               className={`flex items-center gap-3 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors ${
                 active
                   ? "bg-white/[0.08] text-zinc-100 shadow-[inset_2px_0_0_0_rgba(255,255,255,0.12)]"
@@ -102,7 +108,21 @@ export function AppSidebar() {
               } ${sidebarCollapsed ? "justify-center" : ""}`}
             >
               <Icon className="h-[18px] w-[18px] shrink-0 opacity-90" aria-hidden />
-              {!sidebarCollapsed ? <span className="truncate">{item.label}</span> : null}
+              {!sidebarCollapsed ? (
+                <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                  <span className="truncate">{item.label}</span>
+                  {item.inDevelopment ? (
+                    <span
+                      className="shrink-0 rounded border border-amber-500/25 bg-amber-500/[0.08] px-1.5 py-px text-[10px] font-medium leading-tight text-amber-400/95"
+                      aria-hidden
+                    >
+                      {sb.navDevBadge}
+                    </span>
+                  ) : null}
+                </span>
+              ) : item.inDevelopment ? (
+                <span className="sr-only">{sb.navDevBadge}</span>
+              ) : null}
             </Link>
           );
         })}

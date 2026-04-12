@@ -1,6 +1,6 @@
 ﻿# Hermes-Agent: Industrial-Grade Web UI for High-Performance LLM Orchestration
 
-> **A production-oriented reference UI for [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)** — built for teams who ship **hermes-agent** in production and refuse to trade off **latency**, **security**, or **delivery velocity**.
+> **A production-oriented reference UI for [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)** — built for teams who ship **hermes-agent** in production and refuse to trade off **latency**, **security**, or **delivery velocity**. *Scope labels below separate **shipped** behavior from **preview / stub** surfaces so expectations stay honest on GitHub.*
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 [![Build](https://img.shields.io/badge/build-GitHub%20Actions-lightgrey.svg)](#reliability--ci-evidence)
@@ -16,11 +16,16 @@
 - **Product-grade shell** — multi-area **App Shell** (Chat, Insights, Skills, Orchestration), **IndexedDB** chat sessions, and **interactive `clarify`** over a **single long-lived WebSocket** (`clarify_pick`), aligned with upstream tool contracts.
 - **One-click deploy** — **Docker Compose** profiles separate **Demo** (time-to-wow) from **Prod** (**secure by default**: non-root, internal data plane, health-gated startup).
 
+## Preview
+
+![ScreenShot_2026-04-12_161956_276](F:\desktop\hermes-agent-ui\assets\ScreenShot_2026-04-12_161956_276.png)
+
 ---
 
 ## Table of contents
 
 - [Why Hermes-Agent UI](#why-hermes-agent-ui)
+- [Feature readiness (shipped vs preview)](#feature-readiness-shipped-vs-preview)
 - [3-minute quickstart](#3-minute-quickstart)
 - [Performance & compliance](#performance--compliance)
 - [Architecture](#architecture)
@@ -63,42 +68,108 @@ The result: the interface stays **interactive** while the model keeps thinking.
 
 ### Product shell, sidecar APIs & interactive `clarify`
 
-- **App Shell** (Next.js App Router): sidebar navigation across **Chat**, **Insights**, **Skills**, and **Orchestration**; designed as an extensible **hub**, not a single-page-only demo.
-- **Sidecar HTTP APIs** — FastAPI routers under `apps/api/routers/` (e.g. insights, skills catalog/install, orchestration stubs) with optional **SQLite-backed** helpers where documented in code.
+- **App Shell** (Next.js App Router): sidebar navigation across **Chat**, **Insights**, **Skills**, and **Orchestration**. **Chat** is the production-critical path; **Orchestration** is **preview/mock** and **Skills sandbox run** is a **stub** — see [Feature readiness](#feature-readiness-shipped-vs-preview).
+- **Sidecar HTTP APIs** — FastAPI routers under `apps/api/routers/` (insights, skills catalog/install, orchestration, etc.) with optional **SQLite-backed** helpers where documented in code.
 - **`clarify` tool (upstream contract)** — when the model calls `clarify`, the API **blocks** the Hermes callback until the user submits a choice via **`clarify_pick`** on the **same** `/ws/agent` connection (background reader + merged wait so picks are not starved). The UI may show **`STATUS`** with **`waiting_clarify`**. Optional **`HERMES_CLARIFY_TIMEOUT_SEC`** (default `3600`; `≤0` means wait indefinitely).
 - **`packages/skill-spec`** — JSON Schema + docs for `skill.json`-style packages consumed by the Skills UI and validation helpers.
 
 ---
 
+## Feature readiness (shipped vs preview)
+
+Use this table when triaging issues or planning forks. **“Preview”** means UI/API exists but is not a full standalone product in that domain.
+
+| Surface | Status | Notes |
+| --- | --- | --- |
+| **Chat** — WebSocket streaming, replay, `clarify` + `clarify_pick`, artifacts, sandboxed HTML | **Shipped** | Primary production path; aligns with upstream **hermes-agent** tool contracts. |
+| **IndexedDB** chat sessions | **Dev** | Client-side multi-session history; server replay remains owner-scoped. |
+| **Insights** hub | **Dev** | REST APIs wired (`/insights/...`); charts populate as the agent runs (sparse until used). |
+| **Skills** hub — catalog, install, JSON Schema validation | **Dev** | End-to-end against API. |
+| **Skills** — editor / “Run in sandbox” | **Dev** | Placeholder execution only — **no** real isolation; see in-app copy. |
+| **Orchestration** hub — task graph, Time Travel, fork | **Preview** | **Mock / heuristic** snapshots for UX demos — **not** a full distributed orchestration engine. |
+
+---
+
 ## 3-minute quickstart
 
-> **Goal:** open the UI, click **Demo Templates**, and see **response + reasoning + artifacts** in under three minutes — no yak-shaving.
+> **Goal:** from a clean clone, reach a **working Chat** (health checks green, LLM configured) and send one message that streams **Reasoning Trace + Artifacts** — about three minutes after images are built.
 
-### Option A — Demo mode (zero-friction, auth off)
+### Prerequisites
 
-Copy env defaults, build, run:
+- **Docker Desktop** (or Docker Engine) + **Docker Compose v2**
+- **Git**
+- A valid **OpenAI-compatible API key** (OpenAI, Azure OpenAI, DashScope-compatible, etc.) — the API container loads **`apps/api/.env`**; without real keys the agent may not call your provider as intended.
+
+### Option A — Docker Compose `demo` profile (recommended first run)
+
+Run from the **repository root** (clone URL = this GitHub repository):
 
 ```bash
+git clone <repository-url>
+cd hermes-agent-ui
+
+# 1) Compose + build args (mirrors, profiles)
 cp .env.example.docker .env
-# Optional (CN): set NODE_IMAGE/PYTHON_IMAGE in .env to domestic mirror tags
+
+# 2) API runtime — REQUIRED for real LLM calls (Compose mounts this file)
+cp apps/api/.env.example apps/api/.env
+# Edit apps/api/.env: set OPENAI_API_KEY (and OPENAI_BASE_URL if you use Qwen/DashScope/etc.)
+# Keep HERMES_PROVIDER/HERMES_MODEL consistent with your provider.
+
+# 3) Build and start (api-demo + web-demo; auth off for demo)
 docker compose --profile demo up --build
 ```
 
-Then:
+Wait until **`hermes-api-demo`** is **healthy** (Compose shows `healthy`), then:
 
-1. Open **`http://localhost:3000`**
-2. Use the sidebar to stay on **Chat**, or explore **Insights / Skills / Orchestration** (hub routes).
-3. Click any **Demo Templates** chip under the input and watch **Reasoning Trace** and **Artifacts** update in real time.
+1. **Smoke test API:** open **`http://localhost:8000/health`** — expect JSON `{"ok": true}`.
+2. **Open UI:** **`http://localhost:3000`** — sidebar **Chat** is the main experience.
+3. Under the composer, click a **Demo Templates** chip **or** type a short prompt and send — **Reasoning Trace** and **Artifacts** should update live.
 
-**Endpoints**
+**Ports (demo)**
 
 | Surface | URL |
 | --- | --- |
 | Web UI | `http://localhost:3000` |
 | API health | `http://localhost:8000/health` |
-| Agent WebSocket | `ws://localhost:8000/ws/agent` |
+| Agent WebSocket (browser connects here) | `ws://localhost:8000/ws/agent` |
 
-### Option B — Production mode (secure by default)
+**Hub routes:** **Insights / Skills / Orchestration** are navigable; Orchestration uses **demo/mock graph** semantics (see [feature readiness](#feature-readiness-shipped-vs-preview)).
+
+**Troubleshooting (demo)**
+
+- **Web never becomes ready:** wait until `api-demo` is **healthy** (`docker compose ps`); inspect **`docker compose logs api-demo`**.
+- **Chat hangs or no model output:** confirm **`apps/api/.env`** exists, contains a valid **`OPENAI_API_KEY`**, and **`HERMES_MODEL`** matches your provider; watch API logs for 401/404 from the LLM endpoint.
+- **Port already in use:** stop other services on **3000** / **8000** or change host port mappings in `docker-compose.yml`.
+
+### Option B — Local dev without Docker (two terminals)
+
+Useful for UI/API iteration without rebuilding images.
+
+**Terminal 1 — API**
+
+```bash
+cd apps/api
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Windows PowerShell: Copy-Item .env.example .env
+# Edit .env: OPENAI_API_KEY, optional OPENAI_BASE_URL, HERMES_MODEL, etc.
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+**Terminal 2 — Web (from repo root)**
+
+```bash
+pnpm install
+pnpm dev:web
+```
+
+Ensure **`NEXT_PUBLIC_AGENT_WS_URL`** (and optionally **`NEXT_PUBLIC_AGENT_HTTP_URL`**) point at your API — default is `ws://localhost:8000/ws/agent` and `http://localhost:8000`. Open **`http://localhost:3000`** (Next dev port if shown in the terminal).
+
+### Option C — Production mode (secure by default)
 
 > Use this when you are shipping to **DevOps / SRE** audiences: **JWT on**, **Postgres + Redis** on an **internal Docker network**, **API/Web** still exposed only where you intend.
 

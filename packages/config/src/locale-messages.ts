@@ -145,6 +145,8 @@ export type Messages = {
       collapse: string;
       expand: string;
       productAria: string;
+      /** Short badge for hub routes still under active development */
+      navDevBadge: string;
     };
   };
 };
@@ -309,6 +311,7 @@ export const messages: Record<Locale, Messages> = {
         collapse: "收起侧栏",
         expand: "展开侧栏",
         productAria: "Hermes 产品导航",
+        navDevBadge: "开发中",
       },
     },
   },
@@ -472,6 +475,7 @@ export const messages: Record<Locale, Messages> = {
         collapse: "Collapse sidebar",
         expand: "Expand sidebar",
         productAria: "Hermes product navigation",
+        navDevBadge: "Dev",
       },
     },
   },
