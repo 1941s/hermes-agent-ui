@@ -8,3 +8,8 @@ build
 .venv
 __pycache__
 *.pyc
+
+# Local Hermes API SQLite (replay / dev) — never commit machine-specific DB state
+apps/api/runtime.db
+apps/api/runtime.db-shm
+apps/api/runtime.db-wal
