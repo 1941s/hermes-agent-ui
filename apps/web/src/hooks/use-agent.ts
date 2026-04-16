@@ -9,6 +9,7 @@ import {
   maxSeqFromTurns,
   PENDING_TURN_PREFIX,
 } from "@/lib/conversation-history";
+import { getRuntimeConfig } from "@/lib/runtime-config";
 import { SessionManager } from "@/lib/session-manager";
 import type { AgentFrame, ChatTurn } from "@/types";
 
@@ -89,6 +90,7 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
   const lastSeqRef = useRef<number>(-1);
   const lastResumeSeqRef = useRef<number>(-1);
   const pendingResponseRef = useRef(false);
+  const manualStopRef = useRef(false);
   const userScopesRef = useRef<Set<string>>(parseScopesFromToken(AUTH_TOKEN));
   const persistTimerRef = useRef<number | null>(null);
 
@@ -146,12 +148,14 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
 
     ws.onopen = () => {
       isConnectingRef.current = false;
+      manualStopRef.current = false;
       reconnectAttemptRef.current = 0;
       setConnected(true);
       setStatus("idle");
       setError(null);
       resetHeartbeatTimeout();
       if (outboundQueueRef.current.length === 0 && lastSeqRef.current >= 0 && lastResumeSeqRef.current !== lastSeqRef.current) {
+        const cfg = getRuntimeConfig();
         ws.send(
           JSON.stringify({
             session_id: sessionIdRef.current,
@@ -159,6 +163,9 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
             message: "",
             history: [],
             resume_from_seq: lastSeqRef.current,
+            model_base_url: cfg.modelBaseUrl,
+            model_api_key: cfg.modelApiKey,
+            model_name: cfg.modelName,
           }),
         );
         lastResumeSeqRef.current = lastSeqRef.current;
@@ -194,6 +201,7 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
             setStatus("responding");
             if (Boolean(frame.payload.final)) {
               pendingResponseRef.current = false;
+              setStatus("idle");
             }
           }
           queueRef.current.push(frame);
@@ -207,6 +215,11 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
     ws.onclose = () => {
       isConnectingRef.current = false;
       setConnected(false);
+      if (manualStopRef.current) {
+        manualStopRef.current = false;
+        setStatus("idle");
+        return;
+      }
       setStatus("disconnected");
       if (outboundQueueRef.current.length > 0 || pendingResponseRef.current) {
         const attempt = reconnectAttemptRef.current + 1;
@@ -279,6 +292,7 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
       const trimmed = message.trim();
       if (!trimmed) return;
       const history = buildHistoryFromTurns(turnsRef.current, HISTORY_TURNS);
+      const cfg = getRuntimeConfig();
       const pendingId = `${PENDING_TURN_PREFIX}${crypto.randomUUID()}`;
       setTurns((prev) => [...prev, { turn_id: pendingId, user_text: trimmed, frames: [] }]);
       const payload = JSON.stringify({
@@ -287,6 +301,9 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
         message: trimmed,
         history,
         resume_from_seq: null,
+        model_base_url: cfg.modelBaseUrl,
+        model_api_key: cfg.modelApiKey,
+        model_name: cfg.modelName,
       });
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         outboundQueueRef.current.push(payload);
@@ -307,6 +324,7 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
       if (!c) return;
       const bubble = userBubbleText.trim() || c;
       const history = buildHistoryFromTurns(turnsRef.current, HISTORY_TURNS);
+      const cfg = getRuntimeConfig();
       const pendingId = `${PENDING_TURN_PREFIX}${crypto.randomUUID()}`;
       setTurns((prev) => [...prev, { turn_id: pendingId, user_text: bubble, frames: [] }]);
       const payload = JSON.stringify({
@@ -316,6 +334,9 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
         history,
         resume_from_seq: null,
         clarify_pick: c,
+        model_base_url: cfg.modelBaseUrl,
+        model_api_key: cfg.modelApiKey,
+        model_name: cfg.modelName,
       });
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         outboundQueueRef.current.push(payload);
@@ -329,6 +350,18 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
     },
     [connect],
   );
+
+  const stopGenerating = useCallback(() => {
+    pendingResponseRef.current = false;
+    outboundQueueRef.current = [];
+    clearConnectionTimers();
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      manualStopRef.current = true;
+      wsRef.current.close(1000, "user_stop");
+    } else {
+      setStatus("idle");
+    }
+  }, [clearConnectionTimers]);
 
   const groupedFrames = useMemo(() => {
     const m: Record<string, AgentFrame[]> = {};
@@ -358,6 +391,8 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
     },
     sendMessage,
     sendClarifyPick,
+    stopGenerating,
+    canStop: status === "thinking" || status === "responding",
     status,
   };
 }

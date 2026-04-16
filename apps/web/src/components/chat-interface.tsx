@@ -1,8 +1,8 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
+// NOTE: temporarily avoid framer-motion runtime mismatch in dev SSR.
 import dynamic from "next/dynamic";
-import { Activity, ArrowDown, ArrowUp, LayoutGrid, MessageSquare, PanelRight, Plus, Sparkles } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, LayoutGrid, MessageSquare, PanelRight, Plus, Sparkles, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArtifactsPreview } from "@/components/artifacts-preview";
@@ -17,6 +17,7 @@ import { clarifySessionKey, extractClarifyFromFrames, type ClarifyPrompt } from 
 import { aggregateAssistantFromFrames, isAssistantReplyInFlight } from "@/lib/conversation-history";
 
 const WS_URL = process.env.NEXT_PUBLIC_AGENT_WS_URL ?? "ws://localhost:8000/ws/agent";
+
 const DiagnosticsDrawer = dynamic(
   () => import("@/components/diagnostics-drawer").then((m) => m.DiagnosticsDrawer),
   { ssr: false },
@@ -38,12 +39,10 @@ export function ChatInterface() {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const { t } = useTranslations();
   const { ready, sessionId, sessions, createSession, selectSession } = useChatSession();
-  const { frames, turns, sendMessage, sendClarifyPick, status, connected, debug, permissions, hydrated } = useAgent(
-    WS_URL,
-    {
+  const { frames, turns, sendMessage, sendClarifyPick, stopGenerating, canStop, status, connected, debug, permissions, hydrated } =
+    useAgent(WS_URL, {
       sessionId,
-    },
-  );
+    });
   const prevStatusRef = useRef(status);
 
   const responseText = useMemo(
@@ -134,11 +133,7 @@ export function ChatInterface() {
           : t.states.idle;
 
   if (!ready) {
-    return (
-      <div className="hermes-grid flex h-full min-h-0 flex-1 items-center justify-center bg-[var(--bg-base)] text-sm text-zinc-500">
-        {t.labels.loadingChat}
-      </div>
-    );
+    return <div className="p-6 text-sm text-zinc-500">{t.labels.loadingChat}</div>;
   }
 
   return (
@@ -226,20 +221,11 @@ export function ChatInterface() {
               className="hermes-scrollbar h-full overflow-y-auto overflow-x-hidden overscroll-y-contain"
             >
               <div className="mx-auto w-full max-w-2xl px-4 py-6 md:px-2">
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={status}
-                    initial={{ opacity: 0.85 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0.85 }}
-                    transition={{ duration: 0.15 }}
-                    className="mb-6 flex items-center gap-3 text-[11px] text-zinc-500"
-                  >
-                    <span className="h-px flex-1 bg-[var(--border-hairline)]" />
-                    <span className="shrink-0 tabular-nums">{statusLabel}</span>
-                    <span className="h-px flex-1 bg-[var(--border-hairline)]" />
-                  </motion.div>
-                </AnimatePresence>
+                <div className="mb-6 flex items-center gap-3 text-[11px] text-zinc-500">
+                  <span className="h-px flex-1 bg-[var(--border-hairline)]" />
+                  <span className="shrink-0 tabular-nums">{statusLabel}</span>
+                  <span className="h-px flex-1 bg-[var(--border-hairline)]" />
+                </div>
 
                 {hasTranscript ? (
                   <div className="space-y-8">
@@ -361,14 +347,26 @@ export function ChatInterface() {
                   autoComplete="off"
                   aria-label={t.actions.placeholder}
                 />
-                <button
-                  type="submit"
-                  disabled={!message.trim()}
-                  className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-900 transition enabled:hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label={t.actions.send}
-                >
-                  <ArrowUp className="h-4 w-4" aria-hidden />
-                </button>
+                {canStop ? (
+                  <button
+                    type="button"
+                    onClick={stopGenerating}
+                    className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-rose-500/45 bg-rose-500/15 text-rose-300 transition hover:border-rose-400 hover:bg-rose-500/25 hover:text-rose-200"
+                    aria-label={t.actions.stop}
+                    title={t.actions.stop}
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" aria-hidden />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={!message.trim()}
+                    className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-900 transition enabled:hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label={t.actions.send}
+                  >
+                    <ArrowUp className="h-4 w-4" aria-hidden />
+                  </button>
+                )}
               </div>
               <p className="px-1 text-center text-[11px] text-zinc-600">{t.labels.demoTemplates}</p>
               <div className="flex flex-wrap justify-center gap-2">

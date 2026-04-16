@@ -7,6 +7,7 @@ import {
   Package,
   PanelLeftClose,
   PanelLeft,
+  Settings,
   Sparkles,
 } from "lucide-react";
 import Link from "next/link";
@@ -59,6 +60,12 @@ export function AppSidebar() {
       icon: GitBranch,
       match: (p) => p === "/orchestration" || p.startsWith("/orchestration/"),
       inDevelopment: true,
+    },
+    {
+      href: "/settings",
+      label: h.nav.settings,
+      icon: Settings,
+      match: (p) => p === "/settings" || p.startsWith("/settings/"),
     },
   ];
 

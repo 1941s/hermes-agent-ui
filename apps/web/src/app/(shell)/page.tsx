@@ -1,4 +1,8 @@
-import { ChatInterface } from "@/components/chat-interface";
+import dynamicImport from "next/dynamic";
+
+const ChatInterface = dynamicImport(() => import("@/components/chat-interface").then((m) => m.ChatInterface), {
+  ssr: false,
+});
 
 export const dynamic = "force-dynamic";
 

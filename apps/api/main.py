@@ -17,6 +17,8 @@ import os
 import queue
 import sqlite3
 import threading
+import urllib.error
+import urllib.request
 from contextlib import suppress
 from dataclasses import dataclass
 from threading import Thread
@@ -26,7 +28,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 try:
     from .auth_dependency import (
@@ -135,43 +137,20 @@ class NoopHermesService:
         return
 
 
-def _prime_provider_env() -> None:
-    # Keep bootstrap deterministic on first boot; users can override via .env (loaded above).
-    os.environ.setdefault("OPENAI_API_KEY", "stub-openai-key")
-    os.environ.setdefault("ANTHROPIC_API_KEY", "stub-anthropic-key")
-    os.environ.setdefault("HERMES_PROVIDER", "openai")
-    os.environ.setdefault("HERMES_MODEL", "gpt-4o-mini")
-    # OpenAI-compatible base URL (DashScope, Azure OpenAI, etc.) — OpenAI SDK reads OPENAI_BASE_URL.
-    if raw := os.getenv("OPENAI_BASE_URL"):
-        os.environ["OPENAI_BASE_URL"] = raw.strip().rstrip("/")
-        # When a custom OpenAI-compatible base URL is set, never route to Anthropic by mistake.
-        os.environ["HERMES_PROVIDER"] = "openai"
-    model_lower = (os.getenv("HERMES_MODEL") or "").lower()
-    # Qwen / GPT / DeepSeek families use OpenAI-compatible APIs (not api.anthropic.com).
-    if any(x in model_lower for x in ("qwen", "gpt-", "deepseek", "moonshot", "doubao")):
-        os.environ["HERMES_PROVIDER"] = "openai"
-
-
 _clarify_lock = threading.Lock()
 # Session id → queue for user choice while `clarify` tool callback is blocked.
 _clarify_pending: dict[str, queue.Queue[str]] = {}
 CLARIFY_WAIT_SEC = int(os.getenv("HERMES_CLARIFY_TIMEOUT_SEC", "3600"))
 
 
-def _explicit_openai_client_kwargs() -> dict[str, str]:
-    """Credentials for AIAgent to skip auxiliary `resolve_provider_client("auto")` routing.
-
-    Without explicit base_url + api_key, hermes-agent picks a default client (often Anthropic
-    when ANTHROPIC_API_KEY is set), then sends HERMES_MODEL to the wrong host (404 for qwen).
-    """
-    key = (os.getenv("OPENAI_API_KEY") or "").strip()
-    if not key or key == "stub-openai-key":
+def _explicit_openai_client_kwargs(request: WsRequest) -> dict[str, str]:
+    """Take model provider credentials from request payload only (no env fallback)."""
+    key = (request.model_api_key or "").strip()
+    base = (request.model_base_url or "").strip().rstrip("/")
+    if not key or not base:
         return {}
-    base = (os.getenv("OPENAI_BASE_URL") or "").strip().rstrip("/")
-    if not base:
-        base = "https://api.openai.com/v1"
-    prov = (os.getenv("HERMES_PROVIDER") or "openai").strip().lower() or "openai"
-    return {"base_url": base, "api_key": key, "provider": prov}
+    provider = "anthropic" if "/anthropic" in base.lower() else "openai"
+    return {"base_url": base, "api_key": key, "provider": provider}
 
 
 @dataclass
@@ -190,7 +169,6 @@ class HermesServiceWrapper:
     """
 
     def __init__(self) -> None:
-        _prime_provider_env()
         self._agent_class = self._resolve_agent_class()
 
     @staticmethod
@@ -362,8 +340,11 @@ class HermesServiceWrapper:
                         _clarify_pending.pop(sid, None)
 
             try:
+                model_name = (request.model_name or "").strip()
+                if not model_name:
+                    raise ValueError("model_name is required from UI settings.")
                 agent_kw: dict[str, Any] = {
-                    "model": os.getenv("HERMES_MODEL", "gpt-4o-mini"),
+                    "model": model_name,
                     "reasoning_callback": reasoning_callback,
                     "tool_start_callback": tool_start_callback,
                     "tool_complete_callback": tool_complete_callback,
@@ -372,7 +353,7 @@ class HermesServiceWrapper:
                     "platform": "web",
                     "quiet_mode": True,
                 }
-                agent_kw.update(_explicit_openai_client_kwargs())
+                agent_kw.update(_explicit_openai_client_kwargs(request))
                 agent = self._agent_class(**agent_kw)
                 result = agent.run_conversation(
                     user_message=request.message,
@@ -423,6 +404,11 @@ else:
 prompt_service = PromptService()
 
 
+class ModelConnectionTestRequest(BaseModel):
+    model_base_url: str
+    model_api_key: str
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     _init_db()
@@ -431,6 +417,118 @@ async def on_startup() -> None:
 @app.get("/health")
 async def health() -> JSONResponse:
     return JSONResponse({"ok": True})
+
+
+@app.post("/model/connection-test")
+async def model_connection_test(payload: ModelConnectionTestRequest) -> JSONResponse:
+    base = payload.model_base_url.strip().rstrip("/")
+    key = payload.model_api_key.strip()
+    if not base:
+        return JSONResponse({"ok": False, "message": "model_base_url is required"})
+    if not (base.startswith("https://") or base.startswith("http://")):
+        return JSONResponse({"ok": False, "message": "model_base_url must start with http:// or https://"})
+    if not key:
+        return JSONResponse({"ok": False, "message": "model_api_key is required"})
+
+    provider = "anthropic" if "/anthropic" in base.lower() else "openai"
+    common_headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if provider == "anthropic":
+        common_headers["x-api-key"] = key
+        common_headers["anthropic-version"] = "2023-06-01"
+    else:
+        common_headers["Authorization"] = f"Bearer {key}"
+
+    def _request(method: str, url: str, body: dict[str, Any] | None = None) -> tuple[bool, int, str]:
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(url, method=method, data=data, headers=common_headers)
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                return True, int(resp.status), "ok"
+        except urllib.error.HTTPError as exc:
+            msg = exc.reason if isinstance(exc.reason, str) else str(exc.reason)
+            return False, int(exc.code), msg
+        except urllib.error.URLError as exc:
+            return False, 0, str(exc.reason)
+
+    if provider == "anthropic":
+        # Anthropic-compatible probe: /v1/messages.
+        ok, status, detail = _request(
+            "POST",
+            f"{base}/v1/messages",
+            {
+                "model": "claude-3-5-haiku-latest",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
+        if ok:
+            return JSONResponse({"ok": True, "status": status, "message": "Anthropic provider connection is healthy."})
+        if status in (401, 403):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "status": status,
+                    "message": f"Anthropic authentication failed ({status} {detail}).",
+                }
+            )
+        if status in (400, 404, 405, 422, 429) or status >= 500:
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "status": status,
+                    "message": "Anthropic endpoint is reachable; request was rejected due to model or payload constraints.",
+                }
+            )
+        return JSONResponse(
+            {
+                "ok": False,
+                "status": status,
+                "message": f"Anthropic endpoint rejected credentials or path ({status} {detail}).",
+            }
+        )
+
+    # OpenAI-compatible probe 1: most providers support /models.
+    ok, status, detail = _request("GET", f"{base}/models")
+    if ok:
+        return JSONResponse({"ok": True, "status": status, "message": "Model provider connection is healthy."})
+    if status in (401, 403):
+        return JSONResponse({"ok": False, "status": status, "message": f"Provider authentication failed ({status} {detail})."})
+    if status not in (404, 405):
+        # Non-auth errors (e.g. 429/5xx) still indicate endpoint is reachable.
+        reachable = status in (400, 422, 429) or status >= 500
+        return JSONResponse(
+            {
+                "ok": reachable,
+                "status": status,
+                "message": "Model provider is reachable." if reachable else f"Provider rejected request ({status} {detail}).",
+            }
+        )
+
+    # Probe 2: fallback for gateways that do not expose /models.
+    ok2, status2, detail2 = _request(
+        "POST",
+        f"{base}/chat/completions",
+        {
+            "model": "qwen-plus",
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "temperature": 0,
+        },
+    )
+    if ok2:
+        return JSONResponse({"ok": True, "status": status2, "message": "Model provider connection is healthy."})
+    if status2 in (401, 403):
+        return JSONResponse({"ok": False, "status": status2, "message": f"Provider authentication failed ({status2} {detail2})."})
+    if status2 in (400, 404, 405, 422, 429) or status2 >= 500:
+        # 4xx like 400/422 may come from payload/model mismatch, but network + auth path is working.
+        return JSONResponse(
+            {
+                "ok": True,
+                "status": status2,
+                "message": "Model provider endpoint is reachable; request was rejected due to payload or model constraints.",
+            }
+        )
+    return JSONResponse({"ok": False, "status": status2, "message": f"Provider rejected credentials or endpoint ({status2} {detail2})."})
 
 
 @app.exception_handler(Exception)
@@ -1021,6 +1119,23 @@ async def ws_agent(websocket: WebSocket) -> None:
                 RUNTIME_COUNTERS["benchmark_sessions"] += 1
                 await run_benchmark_stream(req.session_id, trace_id, seq)
                 continue
+
+            if req.message.strip():
+                missing: list[str] = []
+                if not (req.model_base_url or "").strip():
+                    missing.append("model_base_url")
+                if not (req.model_api_key or "").strip():
+                    missing.append("model_api_key")
+                if not (req.model_name or "").strip():
+                    missing.append("model_name")
+                if missing:
+                    await send_ws_error(
+                        req.session_id,
+                        "MODEL_CONFIG_REQUIRED",
+                        "Model API configuration is required from UI settings.",
+                        {"missing_fields": missing},
+                    )
+                    continue
 
             if heartbeat_task is not None and not heartbeat_task.done():
                 heartbeat_task.cancel()

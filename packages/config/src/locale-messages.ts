@@ -14,6 +14,7 @@ export type Messages = {
   };
   actions: {
     send: string;
+    stop: string;
     runBenchmark: string;
     placeholder: string;
   };
@@ -80,6 +81,7 @@ export type Messages = {
       insights: string;
       skills: string;
       orchestration: string;
+      settings: string;
     };
     brand: string;
     navAria: string;
@@ -120,6 +122,29 @@ export type Messages = {
       sessionLabel: string;
       timeTravelLabel: string;
       noGraphHint: string;
+    };
+    settings: {
+      title: string;
+      subtitle: string;
+      endpointCardTitle: string;
+      endpointCardDesc: string;
+      baseUrlLabel: string;
+      baseUrlPlaceholder: string;
+      apiKeyLabel: string;
+      apiKeyPlaceholder: string;
+      modelNameLabel: string;
+      modelNamePlaceholder: string;
+      save: string;
+      reset: string;
+      saved: string;
+      runtimeHint: string;
+      maskedConfigured: string;
+      testPathHint: string;
+      testConnection: string;
+      testingConnection: string;
+      testSuccess: string;
+      testFailedPrefix: string;
+      securityHint: string;
     };
     editor: {
       title: string;
@@ -164,6 +189,7 @@ export const messages: Record<Locale, Messages> = {
     },
     actions: {
       send: "发送",
+      stop: "停止生成",
       runBenchmark: "性能压测",
       placeholder: "输入问题，Enter 发送…",
     },
@@ -245,6 +271,7 @@ export const messages: Record<Locale, Messages> = {
         insights: "洞察",
         skills: "技能",
         orchestration: "编排",
+        settings: "配置",
       },
       brand: "Hermes WebUI",
       navAria: "主导航",
@@ -287,6 +314,30 @@ export const messages: Record<Locale, Messages> = {
         noGraphHint:
           "当前会话没有任务图快照（例如刚 Fork 的子会话）。点击「加载 Demo 快照」查看 Mock 分叉 / 并行 / 合并回放。",
       },
+      settings: {
+        title: "模型 API 配置",
+        subtitle: "配置生产可用的模型供应商凭据。系统将按会话把凭据安全透传到推理网关，不改动 Hermes 控制面地址。",
+        endpointCardTitle: "模型供应商接入",
+        endpointCardDesc:
+          "填写 OpenAI / Azure OpenAI / 兼容网关的 Base URL 与 API Key。建议使用专用子账号 Key，并开启最小权限策略。",
+        baseUrlLabel: "模型 Base URL",
+        baseUrlPlaceholder: "https://api.example.com",
+        apiKeyLabel: "模型 API Key",
+        apiKeyPlaceholder: "sk-xxxxxxxx",
+        modelNameLabel: "模型名称",
+        modelNamePlaceholder: "例如：qwen-plus / gpt-4o-mini / claude-3-5-sonnet",
+        save: "保存配置",
+        reset: "清空配置",
+        saved: "配置已保存",
+        runtimeHint: "当前配置保存在本地浏览器，仅作用于本设备。",
+        maskedConfigured: "已配置",
+        testPathHint: "运行时将通过安全请求头透传给后端（X-Model-Base-Url / X-Model-Api-Key）。",
+        testConnection: "测试连接",
+        testingConnection: "测试中…",
+        testSuccess: "连接成功，可用于模型调用。",
+        testFailedPrefix: "连接失败：",
+        securityHint: "安全建议：请勿复用个人主密钥，推荐创建可轮换、可审计、最小权限的服务密钥。",
+      },
       editor: {
         title: "Skill 编辑器 / 沙箱（D2 stub）",
         subtitle: "当前为占位执行：无真实隔离。生产环境需容器/受限进程与供应链审计。",
@@ -327,6 +378,7 @@ export const messages: Record<Locale, Messages> = {
     },
     actions: {
       send: "Send",
+      stop: "Stop",
       runBenchmark: "Benchmark",
       placeholder: "Message Hermes…",
     },
@@ -408,6 +460,7 @@ export const messages: Record<Locale, Messages> = {
         insights: "Insights",
         skills: "Skills",
         orchestration: "Orchestration",
+        settings: "Settings",
       },
       brand: "Hermes WebUI",
       navAria: "Primary navigation",
@@ -450,6 +503,31 @@ export const messages: Record<Locale, Messages> = {
         timeTravelLabel: "Time Travel (revision)",
         noGraphHint:
           "No task graph for this session (e.g. a freshly forked child). Use “Load demo snapshots” to replay mock fork/parallel/merge.",
+      },
+      settings: {
+        title: "Model API Settings",
+        subtitle:
+          "Configure production-ready provider credentials. They are securely forwarded per session to the inference gateway without changing Hermes control-plane endpoints.",
+        endpointCardTitle: "Model Provider Integration",
+        endpointCardDesc:
+          "Use OpenAI / Azure OpenAI / compatible gateway Base URL and API key. Prefer scoped service keys with least-privilege access.",
+        baseUrlLabel: "Model Base URL",
+        baseUrlPlaceholder: "https://api.example.com",
+        apiKeyLabel: "Model API Key",
+        apiKeyPlaceholder: "sk-xxxxxxxx",
+        modelNameLabel: "Model Name",
+        modelNamePlaceholder: "e.g. qwen-plus / gpt-4o-mini / claude-3-5-sonnet",
+        save: "Save",
+        reset: "Clear",
+        saved: "Saved",
+        runtimeHint: "Stored in this browser only; affects this device.",
+        maskedConfigured: "configured",
+        testPathHint: "Forwarded at runtime in secure headers: X-Model-Base-Url / X-Model-Api-Key.",
+        testConnection: "Test connection",
+        testingConnection: "Testing…",
+        testSuccess: "Connection verified and ready.",
+        testFailedPrefix: "Connection failed: ",
+        securityHint: "Security tip: avoid personal root keys; use scoped, rotatable service keys with audit trails.",
       },
       editor: {
         title: "Skill editor / sandbox (D2 stub)",

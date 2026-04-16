@@ -232,5 +232,8 @@ class WsRequest(BaseModel):
     history: list[ConversationHistoryMessage] = Field(default_factory=list)
     system_prompt: str | None = None
     resume_from_seq: int | None = None
+    model_base_url: str | None = None
+    model_api_key: str | None = None
+    model_name: str | None = None
     #: Delivered on the same WebSocket while `clarify` tool is blocked waiting for UI input.
     clarify_pick: str | None = None
