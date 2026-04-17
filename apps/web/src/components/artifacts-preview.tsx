@@ -1,8 +1,9 @@
 "use client";
 
 import type { Messages } from "@hermes-ui/config/locale-messages";
+import { ArrowDown } from "lucide-react";
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { useTranslations } from "@/hooks/use-translations";
 import type { AgentFrame } from "@/types";
@@ -98,6 +99,8 @@ function renderArtifact(payload: ArtifactPayload, labels: Messages["labels"]) {
 export function ArtifactsPreview({ frames, responseText }: Props) {
   const { t } = useTranslations();
   const [mode, setMode] = useState<"preview" | "tools" | "artifacts">("preview");
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   const toolLogs = useMemo(
     () =>
@@ -128,6 +131,18 @@ export function ArtifactsPreview({ frames, responseText }: Props) {
         : "text-zinc-500 hover:bg-white/[0.05] hover:text-zinc-300"
     }`;
 
+  const onBodyScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const remaining = el.scrollHeight - (el.scrollTop + el.clientHeight);
+    setIsAtBottom(remaining <= 24);
+  };
+
+  const scrollToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
+
   return (
     <div className="flex min-h-0 grow flex-col overflow-hidden rounded-xl border border-white/[0.06] bg-black/25">
       <div className="flex gap-1 border-b border-white/[0.06] p-2">
@@ -141,45 +156,58 @@ export function ArtifactsPreview({ frames, responseText }: Props) {
           {t.labels.toolLogs}
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3 text-sm">
-        {mode === "preview" ? (
-          <MarkdownPreview content={responseText} />
-        ) : mode === "artifacts" ? (
-          <div className="space-y-3">
-            {artifacts.length === 0 ? (
-              <div className="py-8 text-center text-xs text-zinc-500">{t.labels.noToolLogs}</div>
-            ) : (
-              artifacts.map((item) => (
-                <div key={item.key} className="space-y-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-                  <div className="text-xs text-zinc-500">
-                    {(item.payload.source_tool ?? "tool").toString()} · {item.payload.artifact_type ?? "text"}
-                  </div>
-                  {item.payload.truncated ? (
-                    <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-2 text-xs text-amber-200">
-                      {t.labels.truncatedByServer} {t.labels.originalLength}: {item.payload.original_length ?? "—"}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div ref={scrollRef} className="min-h-0 h-full overflow-auto p-3 text-sm" onScroll={onBodyScroll}>
+          {mode === "preview" ? (
+            <MarkdownPreview content={responseText} />
+          ) : mode === "artifacts" ? (
+            <div className="space-y-3">
+              {artifacts.length === 0 ? (
+                <div className="py-8 text-center text-xs text-zinc-500">{t.labels.noToolLogs}</div>
+              ) : (
+                artifacts.map((item) => (
+                  <div key={item.key} className="space-y-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                    <div className="text-xs text-zinc-500">
+                      {(item.payload.source_tool ?? "tool").toString()} · {item.payload.artifact_type ?? "text"}
                     </div>
-                  ) : null}
-                  {renderArtifact(item.payload, t.labels)}
-                </div>
-              ))
-            )}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {toolLogs.length === 0 ? (
-              <div className="py-8 text-center text-xs text-zinc-500">{t.labels.noToolLogs}</div>
-            ) : (
-              toolLogs.map((log) => (
-                <pre
-                  key={log.key}
-                  className="overflow-x-auto rounded-lg border border-white/[0.08] bg-zinc-950/80 p-3 text-xs text-zinc-200"
-                >
-                  {JSON.stringify(log.payload, null, 2)}
-                </pre>
-              ))
-            )}
-          </div>
-        )}
+                    {item.payload.truncated ? (
+                      <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-2 text-xs text-amber-200">
+                        {t.labels.truncatedByServer} {t.labels.originalLength}: {item.payload.original_length ?? "—"}
+                      </div>
+                    ) : null}
+                    {renderArtifact(item.payload, t.labels)}
+                  </div>
+                ))
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {toolLogs.length === 0 ? (
+                <div className="py-8 text-center text-xs text-zinc-500">{t.labels.noToolLogs}</div>
+              ) : (
+                toolLogs.map((log) => (
+                  <pre
+                    key={log.key}
+                    className="overflow-x-auto rounded-lg border border-white/[0.08] bg-zinc-950/80 p-3 text-xs text-zinc-200"
+                  >
+                    {JSON.stringify(log.payload, null, 2)}
+                  </pre>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+        {!isAtBottom ? (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className="absolute bottom-3 right-3 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-zinc-300 shadow-lg shadow-black/30 backdrop-blur-md transition hover:bg-white/[0.06] hover:text-zinc-100"
+            title={t.labels.scrollToBottom}
+            aria-label={t.labels.scrollToBottom}
+          >
+            <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        ) : null}
       </div>
     </div>
   );

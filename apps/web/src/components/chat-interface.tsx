@@ -2,7 +2,24 @@
 
 // NOTE: temporarily avoid framer-motion runtime mismatch in dev SSR.
 import dynamic from "next/dynamic";
-import { Activity, ArrowDown, ArrowUp, LayoutGrid, MessageSquare, PanelRight, Plus, Sparkles, Square } from "lucide-react";
+import {
+  Activity,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  LayoutGrid,
+  MessageSquare,
+  PanelLeft,
+  PanelLeftClose,
+  PanelRight,
+  PanelRightClose,
+  Pencil,
+  Plus,
+  Sparkles,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArtifactsPreview } from "@/components/artifacts-preview";
@@ -10,13 +27,11 @@ import { ChatMarkdown } from "@/components/chat-markdown";
 import { ClarifyChoicePanel } from "@/components/clarify-choice-panel";
 import { ReasoningTrace } from "@/components/reasoning-trace";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
-import { useAgent } from "@/hooks/use-agent";
-import { useChatSession } from "@/hooks/use-chat-session";
 import { useTranslations } from "@/hooks/use-translations";
 import { clarifySessionKey, extractClarifyFromFrames, type ClarifyPrompt } from "@/lib/clarify-from-frames";
 import { aggregateAssistantFromFrames, isAssistantReplyInFlight } from "@/lib/conversation-history";
-
-const WS_URL = process.env.NEXT_PUBLIC_AGENT_WS_URL ?? "ws://localhost:8000/ws/agent";
+import { useChatRuntime } from "@/providers/chat-runtime-provider";
+import { useUiStore } from "@/stores/ui-store";
 
 const DiagnosticsDrawer = dynamic(
   () => import("@/components/diagnostics-drawer").then((m) => m.DiagnosticsDrawer),
@@ -26,23 +41,62 @@ const DiagnosticsDrawer = dynamic(
 /** ChatGPT-style: pixels from bottom to treat as "following" the stream. */
 const CHAT_STICKY_BOTTOM_PX = 80;
 
-type WorkspaceTab = "artifacts" | "reasoning" | "observability";
-
 export function ChatInterface() {
   const [message, setMessage] = useState("");
   /** Maps `clarifySessionKey` → chosen label (user picked from TOOL_CALL clarify UI). */
   const [clarifyAnswers, setClarifyAnswers] = useState<Record<string, string>>({});
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("artifacts");
+  const workspaceTab = useUiStore((s) => s.workspaceTab);
+  const setWorkspaceTab = useUiStore((s) => s.setWorkspaceTab);
+  const workspaceCollapsed = useUiStore((s) => s.workspaceCollapsed);
+  const toggleWorkspaceCollapsed = useUiStore((s) => s.toggleWorkspaceCollapsed);
+  const workspaceWidth = useUiStore((s) => s.workspaceWidth);
+  const chatHistoryCollapsed = useUiStore((s) => s.chatHistoryCollapsed);
+  const chatHistoryWidth = useUiStore((s) => s.chatHistoryWidth);
+  const setChatHistoryCollapsed = useUiStore((s) => s.setChatHistoryCollapsed);
+  const toggleChatHistoryCollapsed = useUiStore((s) => s.toggleChatHistoryCollapsed);
+  const setWorkspaceCollapsed = useUiStore((s) => s.setWorkspaceCollapsed);
+  const setSidebarCollapsed = useUiStore((s) => s.setSidebarCollapsed);
+  const setChatHistoryWidth = useUiStore((s) => s.setChatHistoryWidth);
+  const setWorkspaceWidth = useUiStore((s) => s.setWorkspaceWidth);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottomRef = useRef(true);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const { t } = useTranslations();
-  const { ready, sessionId, sessions, createSession, selectSession } = useChatSession();
-  const { frames, turns, sendMessage, sendClarifyPick, stopGenerating, canStop, status, connected, debug, permissions, hydrated } =
-    useAgent(WS_URL, {
-      sessionId,
-    });
+  const [deletingSession, setDeletingSession] = useState(false);
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renamingTitle, setRenamingTitle] = useState("");
+  const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
+  const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const [showObservabilityScrollToBottom, setShowObservabilityScrollToBottom] = useState(false);
+  const historyAsideRef = useRef<HTMLElement | null>(null);
+  const workspaceAsideRef = useRef<HTMLElement | null>(null);
+  const observabilityScrollRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<null | { kind: "history" | "workspace"; startX: number; startWidth: number }>(null);
+  const dragRafRef = useRef<number | null>(null);
+  const pendingWidthRef = useRef<number | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const { t, locale } = useTranslations();
+  const {
+    ready,
+    sessionId,
+    sessions,
+    createSession,
+    selectSession,
+    renameSession,
+    deleteSessionWithSnapshot,
+    restoreSession,
+    frames,
+    turns,
+    sendMessage,
+    sendClarifyPick,
+    stopGenerating,
+    canStop,
+    status,
+    connected,
+    debug,
+    hydrated,
+  } = useChatRuntime();
   const prevStatusRef = useRef(status);
 
   const responseText = useMemo(
@@ -68,6 +122,19 @@ export function ChatInterface() {
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
     stickToBottomRef.current = dist <= CHAT_STICKY_BOTTOM_PX;
     setShowScrollToBottom(dist > CHAT_STICKY_BOTTOM_PX && el.scrollHeight > el.clientHeight + 4);
+  }, []);
+
+  const onObservabilityScroll = useCallback(() => {
+    const el = observabilityScrollRef.current;
+    if (!el) return;
+    const remaining = el.scrollHeight - (el.scrollTop + el.clientHeight);
+    setShowObservabilityScrollToBottom(remaining > 24 && el.scrollHeight > el.clientHeight + 4);
+  }, []);
+
+  const scrollObservabilityToBottom = useCallback(() => {
+    const el = observabilityScrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
   useEffect(() => {
@@ -104,12 +171,192 @@ export function ChatInterface() {
     }
   };
 
-  const runDemoPrompt = (prompt: string) => {
-    stickToBottomRef.current = true;
-    sendMessage(prompt);
-    setMessage(prompt);
-    requestAnimationFrame(() => scrollChatToBottom("smooth"));
-  };
+  const formatRelativeTime = useCallback(
+    (ts: number) => {
+      const diff = Date.now() - ts;
+      const minute = 60_000;
+      const hour = 60 * minute;
+      const day = 24 * hour;
+      if (diff < minute) return locale === "zh" ? "刚刚" : "Just now";
+      if (diff < hour) {
+        const v = Math.floor(diff / minute);
+        return locale === "zh" ? `${v} 分钟前` : `${v}m ago`;
+      }
+      if (diff < day) {
+        const v = Math.floor(diff / hour);
+        return locale === "zh" ? `${v} 小时前` : `${v}h ago`;
+      }
+      const v = Math.floor(diff / day);
+      return locale === "zh" ? `${v} 天前` : `${v}d ago`;
+    },
+    [locale],
+  );
+
+  const pushToast = useCallback((next: { text: string; undo?: () => void }) => {
+    if (toastTimerRef.current) {
+      globalThis.clearTimeout(toastTimerRef.current);
+    }
+    setToast(next);
+    toastTimerRef.current = globalThis.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 5000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        globalThis.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceDrawerOpen || typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = (ev: MediaQueryListEvent) => {
+      if (ev.matches) setWorkspaceDrawerOpen(false);
+    };
+    mq.addEventListener("change", onChange);
+    if (mq.matches) setWorkspaceDrawerOpen(false);
+    return () => mq.removeEventListener("change", onChange);
+  }, [workspaceDrawerOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // Auto-compact on narrow screens: collapse both inner rails.
+    const mq = window.matchMedia("(max-width: 1279px)");
+    const applyCompact = (matches: boolean) => {
+      if (matches) {
+        setSidebarCollapsed(true);
+        setChatHistoryCollapsed(true);
+        setWorkspaceCollapsed(true);
+      }
+    };
+    applyCompact(mq.matches);
+    const onChange = (ev: MediaQueryListEvent) => applyCompact(ev.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [setSidebarCollapsed, setChatHistoryCollapsed, setWorkspaceCollapsed]);
+
+  useEffect(() => {
+    if (chatHistoryCollapsed || !historyAsideRef.current) return;
+    historyAsideRef.current.style.width = `${chatHistoryWidth}px`;
+  }, [chatHistoryWidth, chatHistoryCollapsed]);
+
+  useEffect(() => {
+    if (workspaceCollapsed || !workspaceAsideRef.current) return;
+    workspaceAsideRef.current.style.width = `${workspaceWidth}px`;
+  }, [workspaceWidth, workspaceCollapsed]);
+
+  const beginResize = useCallback((kind: "history" | "workspace", event: React.PointerEvent) => {
+    event.preventDefault();
+    const startWidth =
+      kind === "history" ? historyAsideRef.current?.offsetWidth ?? chatHistoryWidth : workspaceAsideRef.current?.offsetWidth ?? workspaceWidth;
+    dragStateRef.current = { kind, startX: event.clientX, startWidth };
+    setIsResizing(true);
+  }, [chatHistoryWidth, workspaceWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const clampHistory = (value: number) => Math.max(220, Math.min(420, value));
+    const clampWorkspace = (value: number) => Math.max(320, Math.min(680, value));
+
+    const flushWidth = () => {
+      dragRafRef.current = null;
+      const drag = dragStateRef.current;
+      const width = pendingWidthRef.current;
+      if (!drag || width == null) return;
+      if (drag.kind === "history" && historyAsideRef.current) {
+        historyAsideRef.current.style.width = `${width}px`;
+      }
+      if (drag.kind === "workspace" && workspaceAsideRef.current) {
+        workspaceAsideRef.current.style.width = `${width}px`;
+      }
+    };
+
+    const onMove = (event: PointerEvent) => {
+      const drag = dragStateRef.current;
+      if (!drag) return;
+      pendingWidthRef.current =
+        drag.kind === "history"
+          ? clampHistory(drag.startWidth + (event.clientX - drag.startX))
+          : clampWorkspace(drag.startWidth - (event.clientX - drag.startX));
+      if (dragRafRef.current == null) {
+        dragRafRef.current = globalThis.requestAnimationFrame(flushWidth);
+      }
+    };
+
+    const onUp = () => {
+      if (dragRafRef.current != null) {
+        globalThis.cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      const drag = dragStateRef.current;
+      const width = pendingWidthRef.current;
+      if (drag && width != null) {
+        if (drag.kind === "history") setChatHistoryWidth(width);
+        if (drag.kind === "workspace") setWorkspaceWidth(width);
+      }
+      pendingWidthRef.current = null;
+      dragStateRef.current = null;
+      setIsResizing(false);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+    };
+  }, [isResizing, setChatHistoryWidth, setWorkspaceWidth]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (isResizing) {
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    } else {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [isResizing]);
+
+  const startRenameSession = useCallback((id: string, title: string) => {
+    setRenamingSessionId(id);
+    setRenamingTitle(title || "");
+  }, []);
+
+  const submitRenameSession = useCallback(async () => {
+    if (!renamingSessionId) return;
+    await renameSession(renamingSessionId, renamingTitle.trim() || (locale === "zh" ? "新对话" : "New chat"));
+    setRenamingSessionId(null);
+    setRenamingTitle("");
+  }, [renamingSessionId, renamingTitle, renameSession, locale]);
+
+  const deleteSessionWithUndo = useCallback(
+    async (id: string) => {
+      if (sessions.length <= 1 || deletingSession) return;
+      setDeletingSession(true);
+      try {
+        const snapshot = await deleteSessionWithSnapshot(id);
+        pushToast({
+          text: locale === "zh" ? "会话已删除" : "Chat deleted",
+          undo: snapshot
+            ? () => {
+                void restoreSession(snapshot);
+              }
+            : undefined,
+        });
+      } finally {
+        setDeletingSession(false);
+      }
+    },
+    [sessions.length, deletingSession, deleteSessionWithSnapshot, pushToast, locale, restoreSession],
+  );
 
   const onClarifySelect = useCallback(
     (turnId: string, prompt: ClarifyPrompt, choice: string) => {
@@ -131,6 +378,115 @@ export function ChatInterface() {
         : status === "waiting_clarify"
           ? t.states.waitingClarify
           : t.states.idle;
+  const useFluidChatWidth = workspaceCollapsed || workspaceWidth <= 320;
+
+  const workspacePanel = (
+    <>
+      <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-hairline)] px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+        <button
+          type="button"
+          onClick={() => toggleWorkspaceCollapsed()}
+          className="inline-flex h-6 w-6 items-center justify-center rounded border border-[var(--border-hairline)] bg-black/20 text-zinc-400 transition hover:bg-white/[0.06] hover:text-zinc-200"
+          title={workspaceCollapsed ? (locale === "zh" ? "展开工作区" : "Expand workspace") : (locale === "zh" ? "收起工作区" : "Collapse workspace")}
+        >
+          {workspaceCollapsed ? <PanelRight className="h-3.5 w-3.5" aria-hidden /> : <PanelRightClose className="h-3.5 w-3.5" aria-hidden />}
+        </button>
+        {t.panes.workspace}
+      </div>
+      <div className="flex shrink-0 gap-1 border-b border-[var(--border-hairline)] px-2 pb-2 pt-2" role="tablist" aria-label={t.panes.workspace}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === "artifacts"}
+          className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-center text-[12px] font-medium transition ${
+            workspaceTab === "artifacts"
+              ? "bg-white/[0.08] text-zinc-100 shadow-[0_1px_0_rgba(255,255,255,0.06)]"
+              : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
+          }`}
+          onClick={() => setWorkspaceTab("artifacts")}
+        >
+          <LayoutGrid className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+          <span className="truncate">{t.panes.artifacts}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === "reasoning"}
+          className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-center text-[12px] font-medium transition ${
+            workspaceTab === "reasoning"
+              ? "bg-white/[0.08] text-zinc-100 shadow-[0_1px_0_rgba(255,255,255,0.06)]"
+              : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
+          }`}
+          onClick={() => setWorkspaceTab("reasoning")}
+        >
+          <MessageSquare className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+          <span className="truncate">{t.panes.reasoning}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={workspaceTab === "observability"}
+          className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-center text-[12px] font-medium transition ${
+            workspaceTab === "observability"
+              ? "bg-white/[0.08] text-zinc-100 shadow-[0_1px_0_rgba(255,255,255,0.06)]"
+              : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
+          }`}
+          onClick={() => setWorkspaceTab("observability")}
+        >
+          <Activity className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+          <span className="truncate">{t.panes.observability}</span>
+        </button>
+      </div>
+
+      <div className="hermes-scrollbar flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-2">
+        {workspaceTab === "artifacts" ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ArtifactsPreview frames={frames} responseText={responseText} />
+          </div>
+        ) : null}
+        {workspaceTab === "reasoning" ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ReasoningTrace variant="embedded" frames={frames} />
+          </div>
+        ) : null}
+        {workspaceTab === "observability" ? (
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <div
+              ref={observabilityScrollRef}
+              className="hermes-scrollbar flex min-h-0 h-full flex-col gap-3 overflow-y-auto"
+              onScroll={onObservabilityScroll}
+            >
+              <div className="rounded-lg border border-[var(--border-hairline)] bg-black/20 px-3 py-2.5 text-[11px] text-zinc-500">
+                <div className="mb-1.5 font-medium text-zinc-400">{t.labels.debug}</div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px]">
+                  <span>{t.labels.lastSeq}</span>
+                  <span className="text-right text-zinc-300">{debug.lastSeq}</span>
+                  <span>{t.labels.resumeSent}</span>
+                  <span className="text-right text-zinc-300">{debug.resumeSent}</span>
+                  <span>{t.labels.reconnectAttempts}</span>
+                  <span className="text-right text-zinc-300">{debug.reconnectAttempts}</span>
+                  <span>{t.labels.queuedMessages}</span>
+                  <span className="text-right text-zinc-300">{debug.queuedMessages}</span>
+                </div>
+              </div>
+              <DiagnosticsDrawer />
+            </div>
+            {showObservabilityScrollToBottom ? (
+              <button
+                type="button"
+                onClick={scrollObservabilityToBottom}
+                className="absolute bottom-3 right-3 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-zinc-300 shadow-lg shadow-black/30 backdrop-blur-md transition hover:bg-white/[0.06] hover:text-zinc-100"
+                title={t.labels.scrollToBottom}
+                aria-label={t.labels.scrollToBottom}
+              >
+                <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </>
+  );
 
   if (!ready) {
     return <div className="p-6 text-sm text-zinc-500">{t.labels.loadingChat}</div>;
@@ -139,18 +495,15 @@ export function ChatInterface() {
   return (
     <div className="hermes-grid relative z-[1] flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[var(--bg-base)]">
       {/* Header: minimal IDE-adjacent chrome */}
-      <header className="sticky top-0 z-20 shrink-0 border-b border-[var(--border-hairline)] bg-[var(--bg-elevated)] backdrop-blur-md">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4 px-3 py-2.5 md:px-5">
+      <header className="sticky top-0 z-20 h-16 shrink-0 border-b border-[var(--border-hairline)] bg-[var(--bg-elevated)] backdrop-blur-md">
+        <div className="flex h-full items-center justify-between gap-4 px-3 md:px-5">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-sidebar)] text-zinc-400">
-              <Sparkles className="h-4 w-4" aria-hidden />
-            </div>
-            <div className="min-w-0">
+            <div className="min-w-0 leading-tight">
               <div className="flex flex-wrap items-baseline gap-2">
-                <h1 className="truncate text-[15px] font-medium tracking-tight text-zinc-100">{t.appName}</h1>
-                <span className="hidden text-[11px] text-zinc-600 sm:inline">Hermes</span>
+                <h1 className="truncate text-[15px] font-medium tracking-tight text-zinc-100">{t.panes.chat}</h1>
+                <span className="hidden text-[11px] text-zinc-600 sm:inline">{sessionId ? sessionId.slice(0, 8) : "—"}</span>
               </div>
-              <p className="truncate text-xs text-zinc-500">{t.tagline}</p>
+              <p className="truncate text-xs text-zinc-500">{locale === "zh" ? "会话工作台" : "Conversation workspace"}</p>
             </div>
           </div>
 
@@ -170,7 +523,166 @@ export function ChatInterface() {
       </header>
 
       {/* Cursor: main column + fixed right rail */}
-      <main className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col overflow-hidden md:flex-row">
+      <main className={`flex min-h-0 w-full flex-1 flex-col overflow-hidden md:flex-row ${isResizing ? "select-none" : ""}`}>
+        <aside
+          ref={historyAsideRef}
+          className={`hidden min-h-0 shrink-0 overflow-x-hidden border-r border-[var(--border-hairline)] bg-[var(--bg-sidebar)] transition-[width] duration-200 md:flex md:flex-col ${
+            chatHistoryCollapsed ? "w-[56px]" : ""
+          } ${isResizing && dragStateRef.current?.kind === "history" ? "transition-none" : ""}`}
+          style={chatHistoryCollapsed ? undefined : { width: `${chatHistoryWidth}px`, willChange: "width", contain: "layout paint" }}
+        >
+          <div className="flex items-center justify-between gap-2 border-b border-[var(--border-hairline)] px-3 py-2.5">
+            {!chatHistoryCollapsed ? <span className="text-[12px] font-medium text-zinc-300">{t.labels.chatSessions}</span> : null}
+            <div className={`flex items-center gap-1 ${chatHistoryCollapsed ? "w-full justify-center" : ""}`}>
+              {!chatHistoryCollapsed ? (
+                <button
+                  type="button"
+                  className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border border-[var(--border-hairline)] bg-black/20 px-2 text-[11px] text-zinc-300 transition hover:bg-white/[0.04]"
+                  onClick={() => void createSession()}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {t.labels.newChat}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border-hairline)] bg-black/20 text-zinc-300 transition hover:bg-white/[0.04]"
+                  onClick={() => void createSession()}
+                  title={t.labels.newChat}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="hermes-scrollbar min-h-0 flex-1 space-y-1 overflow-x-hidden overflow-y-auto p-2">
+            {sessions.map((s) => {
+              const active = s.session_id === sessionId;
+              const isRenaming = renamingSessionId === s.session_id;
+              return (
+                <div
+                  key={s.session_id}
+                  className={`group border transition ${
+                    chatHistoryCollapsed
+                      ? `mx-auto w-10 rounded-md p-1 ${
+                          active
+                            ? "border-zinc-600 bg-white/[0.06]"
+                            : "border-transparent bg-black/10 hover:border-[var(--border-hairline)] hover:bg-white/[0.03]"
+                        }`
+                      : `${
+                          active
+                            ? "rounded-lg border-zinc-600 bg-white/[0.06]"
+                            : "rounded-lg border-transparent bg-black/10 hover:border-[var(--border-hairline)] hover:bg-white/[0.03]"
+                        } p-2`
+                  }`}
+                >
+                  {isRenaming && !chatHistoryCollapsed ? (
+                    <div className="space-y-2">
+                      <input
+                        autoFocus
+                        value={renamingTitle}
+                        onChange={(e) => setRenamingTitle(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void submitRenameSession();
+                          if (e.key === "Escape") {
+                            setRenamingSessionId(null);
+                            setRenamingTitle("");
+                          }
+                        }}
+                        className="hermes-input w-full rounded border border-[var(--border-hairline)] bg-black/30 px-2 py-1 text-xs text-zinc-200"
+                      />
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void submitRenameSession()}
+                          className="rounded border border-emerald-500/30 bg-emerald-500/10 p-1 text-emerald-300"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRenamingSessionId(null);
+                            setRenamingTitle("");
+                          }}
+                          className="rounded border border-zinc-600 bg-black/30 p-1 text-zinc-300"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => selectSession(s.session_id)}
+                        className={`${chatHistoryCollapsed ? "w-full text-center" : "w-full text-left"}`}
+                      >
+                        <div className={`${chatHistoryCollapsed ? "mx-auto flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border-hairline)] bg-black/20 text-center" : ""}`}>
+                          <div className="truncate text-[12px] font-medium text-zinc-200">
+                            {chatHistoryCollapsed ? (s.title || s.session_id.slice(0, 1)).slice(0, 1) : s.title || (locale === "zh" ? "新对话" : "New chat")}
+                          </div>
+                          {!chatHistoryCollapsed ? (
+                            <>
+                              <div className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-zinc-500">
+                                {s.preview || (locale === "zh" ? "暂无消息" : "No messages yet")}
+                              </div>
+                              <div className="mt-1 text-[10px] text-zinc-600">{formatRelativeTime(s.updated_at)}</div>
+                            </>
+                          ) : null}
+                        </div>
+                      </button>
+                      {!chatHistoryCollapsed ? (
+                        <div className="mt-2 hidden items-center gap-1 group-hover:flex">
+                          <button
+                            type="button"
+                            onClick={() => startRenameSession(s.session_id, s.title)}
+                            className="rounded border border-[var(--border-hairline)] bg-black/20 p-1 text-zinc-300 hover:bg-white/[0.06]"
+                            title={locale === "zh" ? "重命名" : "Rename"}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void deleteSessionWithUndo(s.session_id)}
+                            disabled={sessions.length <= 1 || deletingSession}
+                            className="rounded border border-rose-500/30 bg-rose-500/10 p-1 text-rose-300 hover:bg-rose-500/20 disabled:opacity-40"
+                            title={locale === "zh" ? "删除" : "Delete"}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="shrink-0 border-t border-[var(--border-hairline)] p-2">
+            <button
+              type="button"
+              onClick={() => toggleChatHistoryCollapsed()}
+              className={`inline-flex h-8 w-full items-center rounded-lg border border-[var(--border-hairline)] bg-black/20 text-[12px] font-medium text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-200 ${
+                chatHistoryCollapsed ? "justify-center" : "justify-center gap-2 px-2"
+              }`}
+              title={chatHistoryCollapsed ? (locale === "zh" ? "展开会话栏" : "Expand history") : (locale === "zh" ? "收起会话栏" : "Collapse history")}
+            >
+              {chatHistoryCollapsed ? <PanelLeft className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
+              {!chatHistoryCollapsed ? <span>{locale === "zh" ? "收起会话栏" : "Collapse history"}</span> : null}
+            </button>
+          </div>
+        </aside>
+        {!chatHistoryCollapsed ? (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            className="group relative hidden w-1 shrink-0 cursor-col-resize bg-transparent lg:block"
+            onPointerDown={(e) => beginResize("history", e)}
+          >
+            <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--border-hairline)] transition group-hover:bg-zinc-500/70" />
+          </div>
+        ) : null}
         {/* Center: conversation + ChatGPT composer */}
         <section className="flex min-h-0 min-w-0 flex-1 flex-col border-[var(--border-hairline)] bg-[var(--bg-canvas)] md:border-r">
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--border-hairline)] px-4 py-2.5 md:px-5">
@@ -185,24 +697,24 @@ export function ChatInterface() {
                 <Plus className="h-3.5 w-3.5" aria-hidden />
                 <span className="hidden sm:inline">{t.labels.newChat}</span>
               </button>
-              <label className="sr-only" htmlFor="hermes-chat-session-select">
-                {t.labels.chatSessions}
-              </label>
-              <select
-                id="hermes-chat-session-select"
-                className="hermes-input max-w-[min(100%,12rem)] rounded-lg border border-[var(--border-hairline)] bg-black/25 py-1.5 pl-2 pr-7 text-[11px] text-zinc-200"
-                value={sessionId}
-                onChange={(e) => selectSession(e.target.value)}
-                aria-label={t.labels.chatSessions}
-              >
-                {sessions.map((s) => (
-                  <option key={s.session_id} value={s.session_id}>
-                    {s.title || s.session_id.slice(0, 8)}
-                  </option>
-                ))}
-              </select>
             </div>
             <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+              <button
+                type="button"
+                onClick={() => setWorkspaceDrawerOpen(true)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border-hairline)] bg-black/20 text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-200 lg:hidden"
+                title={t.panes.workspace}
+              >
+                <PanelRight className="h-3.5 w-3.5" aria-hidden />
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleWorkspaceCollapsed()}
+                className="hidden h-7 w-7 items-center justify-center rounded-md border border-[var(--border-hairline)] bg-black/20 text-zinc-400 transition hover:bg-white/[0.04] hover:text-zinc-200 lg:inline-flex"
+                title={workspaceCollapsed ? (locale === "zh" ? "展开工作区" : "Expand workspace") : (locale === "zh" ? "收起工作区" : "Collapse workspace")}
+              >
+                {workspaceCollapsed ? <PanelRight className="h-3.5 w-3.5" aria-hidden /> : <PanelRightClose className="h-3.5 w-3.5" aria-hidden />}
+              </button>
               <Activity className="h-3 w-3" aria-hidden />
               <span className="hidden sm:inline">{t.labels.connection}</span>
               <span className="rounded-md border border-[var(--border-hairline)] bg-black/20 px-2 py-0.5 font-mono text-[10px] text-zinc-400">
@@ -220,7 +732,7 @@ export function ChatInterface() {
               onScroll={onChatScroll}
               className="hermes-scrollbar h-full overflow-y-auto overflow-x-hidden overscroll-y-contain"
             >
-              <div className="mx-auto w-full max-w-2xl px-4 py-6 md:px-2">
+              <div className={`w-full px-4 py-6 md:px-6 lg:px-8 ${useFluidChatWidth ? "max-w-none" : "max-w-[1200px]"}`}>
                 <div className="mb-6 flex items-center gap-3 text-[11px] text-zinc-500">
                   <span className="h-px flex-1 bg-[var(--border-hairline)]" />
                   <span className="shrink-0 tabular-nums">{statusLabel}</span>
@@ -252,8 +764,8 @@ export function ChatInterface() {
                       return (
                         <div key={turn.turn_id} className="space-y-4">
                           {turn.user_text ? (
-                            <div className="flex justify-end" role="article" aria-label={t.labels.chatUser}>
-                              <div className="max-w-[min(100%,85%)] rounded-2xl rounded-br-md border border-[var(--border-hairline)] bg-zinc-800/85 px-4 py-2.5 text-[15px] leading-relaxed text-zinc-100 shadow-[0_1px_0_rgba(0,0,0,0.35)]">
+                            <div className="flex w-full justify-end" role="article" aria-label={t.labels.chatUser}>
+                              <div className="ml-auto max-w-[min(100%,85%)] rounded-2xl rounded-br-md border border-[var(--border-hairline)] bg-zinc-800/85 px-4 py-2.5 text-[15px] leading-relaxed text-zinc-100 shadow-[0_1px_0_rgba(0,0,0,0.35)]">
                                 <p className="whitespace-pre-wrap break-words">{turn.user_text}</p>
                               </div>
                             </div>
@@ -368,116 +880,88 @@ export function ChatInterface() {
                   </button>
                 )}
               </div>
-              <p className="px-1 text-center text-[11px] text-zinc-600">{t.labels.demoTemplates}</p>
-              <div className="flex flex-wrap justify-center gap-2">
-                {t.demoPrompts.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="rounded-full border border-[var(--border-hairline)] bg-black/20 px-3 py-1.5 text-xs font-medium text-zinc-400 transition hover:border-[var(--border-strong)] hover:bg-white/[0.04] hover:text-zinc-200"
-                    onClick={() => runDemoPrompt(item.prompt)}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-                {permissions.canRunBenchmark ? (
-                  <button
-                    type="button"
-                    className="rounded-full border border-dashed border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-500 transition hover:border-zinc-500 hover:text-zinc-300"
-                    onClick={() => sendMessage("/benchmark")}
-                  >
-                    {t.actions.runBenchmark}
-                  </button>
-                ) : null}
-              </div>
             </form>
           </div>
         </section>
 
-        {/* Right rail: Cursor-style workspace — tabs so each pane gets full height (no stacked squeeze) */}
-        <aside className="flex min-h-0 w-full min-w-0 flex-1 flex-col border-t border-[var(--border-hairline)] bg-[var(--bg-sidebar)] md:w-[min(100%,28rem)] md:max-w-[min(100%,28rem)] md:flex-none md:border-l md:border-t-0 lg:w-[min(100%,32rem)] lg:max-w-[32rem] xl:w-[34rem] xl:max-w-[34rem]">
-          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-hairline)] px-3 py-2.5 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-            <PanelRight className="h-3.5 w-3.5" aria-hidden />
-            {t.panes.workspace}
+        {/* Right rail: collapsible on desktop; drawer on smaller widths */}
+        {!workspaceCollapsed ? (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            className="group relative hidden w-1 shrink-0 cursor-col-resize bg-transparent lg:block"
+            onPointerDown={(e) => beginResize("workspace", e)}
+          >
+            <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--border-hairline)] transition group-hover:bg-zinc-500/70" />
           </div>
-
-          <div className="flex shrink-0 gap-1 border-b border-[var(--border-hairline)] px-2 pb-2 pt-2" role="tablist" aria-label={t.panes.workspace}>
+        ) : null}
+        <aside
+          ref={workspaceAsideRef}
+          className={`relative hidden min-h-0 shrink-0 bg-[var(--bg-sidebar)] transition-[width] duration-200 lg:flex lg:flex-col ${
+            workspaceCollapsed ? "w-[56px] border-l border-[var(--border-hairline)]" : ""
+          } ${isResizing && dragStateRef.current?.kind === "workspace" ? "transition-none" : ""}`}
+          style={workspaceCollapsed ? undefined : { width: `${workspaceWidth}px`, willChange: "width", contain: "layout paint" }}
+        >
+          <div className={`${workspaceCollapsed ? "hidden" : "flex min-h-0 flex-1 flex-col"} ${isResizing ? "pointer-events-none opacity-80" : ""}`}>
+            {workspacePanel}
+          </div>
+          <div className={`${workspaceCollapsed ? "flex h-full flex-col items-center justify-between py-3" : "hidden"}`}>
             <button
               type="button"
-              role="tab"
-              aria-selected={workspaceTab === "artifacts"}
-              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-center text-[12px] font-medium transition ${
-                workspaceTab === "artifacts"
-                  ? "bg-white/[0.08] text-zinc-100 shadow-[0_1px_0_rgba(255,255,255,0.06)]"
-                  : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
-              }`}
+              onClick={() => toggleWorkspaceCollapsed()}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-hairline)] bg-black/20 text-zinc-300 transition hover:bg-white/[0.06]"
+              title={locale === "zh" ? "展开工作区" : "Expand workspace"}
+            >
+              <PanelRight className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
               onClick={() => setWorkspaceTab("artifacts")}
-            >
-              <LayoutGrid className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-              <span className="truncate">{t.panes.artifacts}</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workspaceTab === "reasoning"}
-              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-center text-[12px] font-medium transition ${
-                workspaceTab === "reasoning"
-                  ? "bg-white/[0.08] text-zinc-100 shadow-[0_1px_0_rgba(255,255,255,0.06)]"
-                  : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border ${
+                workspaceTab === "artifacts"
+                  ? "border-zinc-500 bg-white/[0.08] text-zinc-100"
+                  : "border-[var(--border-hairline)] bg-black/20 text-zinc-400"
               }`}
-              onClick={() => setWorkspaceTab("reasoning")}
+              title={t.panes.artifacts}
             >
-              <MessageSquare className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-              <span className="truncate">{t.panes.reasoning}</span>
+              <LayoutGrid className="h-3.5 w-3.5" />
             </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workspaceTab === "observability"}
-              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-center text-[12px] font-medium transition ${
-                workspaceTab === "observability"
-                  ? "bg-white/[0.08] text-zinc-100 shadow-[0_1px_0_rgba(255,255,255,0.06)]"
-                  : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
-              }`}
-              onClick={() => setWorkspaceTab("observability")}
-            >
-              <Activity className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-              <span className="truncate">{t.panes.observability}</span>
-            </button>
-          </div>
-
-          <div className="hermes-scrollbar flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-2">
-            {workspaceTab === "artifacts" ? (
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <ArtifactsPreview frames={frames} responseText={responseText} />
-              </div>
-            ) : null}
-            {workspaceTab === "reasoning" ? (
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <ReasoningTrace variant="embedded" frames={frames} />
-              </div>
-            ) : null}
-            {workspaceTab === "observability" ? (
-              <div className="hermes-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
-                <div className="rounded-lg border border-[var(--border-hairline)] bg-black/20 px-3 py-2.5 text-[11px] text-zinc-500">
-                  <div className="mb-1.5 font-medium text-zinc-400">{t.labels.debug}</div>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px]">
-                    <span>{t.labels.lastSeq}</span>
-                    <span className="text-right text-zinc-300">{debug.lastSeq}</span>
-                    <span>{t.labels.resumeSent}</span>
-                    <span className="text-right text-zinc-300">{debug.resumeSent}</span>
-                    <span>{t.labels.reconnectAttempts}</span>
-                    <span className="text-right text-zinc-300">{debug.reconnectAttempts}</span>
-                    <span>{t.labels.queuedMessages}</span>
-                    <span className="text-right text-zinc-300">{debug.queuedMessages}</span>
-                  </div>
-                </div>
-                <DiagnosticsDrawer />
-              </div>
-            ) : null}
           </div>
         </aside>
       </main>
+      {workspaceDrawerOpen ? (
+        <div className="fixed inset-0 z-40 flex justify-end bg-black/45 lg:hidden">
+          <div className="relative flex h-full w-full max-w-[92vw] flex-col border-l border-[var(--border-hairline)] bg-[var(--bg-sidebar)] shadow-2xl shadow-black/40">
+            <button
+              type="button"
+              onClick={() => setWorkspaceDrawerOpen(false)}
+              className="absolute right-3 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-hairline)] bg-black/20 text-zinc-300"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            {workspacePanel}
+          </div>
+        </div>
+      ) : null}
+      {toast ? (
+        <div className="pointer-events-none fixed bottom-5 left-1/2 z-50 -translate-x-1/2">
+          <div className="pointer-events-auto flex items-center gap-3 rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-elevated)] px-3 py-2 text-xs text-zinc-200 shadow-xl shadow-black/30">
+            <span>{toast.text}</span>
+            {toast.undo ? (
+              <button
+                type="button"
+                onClick={() => {
+                  toast.undo?.();
+                  setToast(null);
+                }}
+                className="rounded border border-[var(--border-hairline)] bg-black/20 px-2 py-0.5 font-medium text-zinc-100 hover:bg-white/[0.06]"
+              >
+                {locale === "zh" ? "撤销" : "Undo"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

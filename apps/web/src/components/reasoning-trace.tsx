@@ -2,7 +2,7 @@
 
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, Wrench } from "lucide-react";
+import { ArrowDown, ChevronDown, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useTranslations } from "@/hooks/use-translations";
@@ -80,9 +80,30 @@ function estimateCardHeight(frame: AgentFrame): number {
   return CARD_BASE_HEIGHT + lineCount * 18 + CARD_VERTICAL_GAP;
 }
 
+function toPrettyJson(value: unknown): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        return JSON.stringify(JSON.parse(trimmed), null, 2);
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 function TraceCard({ frame, withMotion }: { frame: AgentFrame; withMotion: boolean }) {
   const isThought = frame.type === "THOUGHT";
   const isTool = frame.type === "TOOL_CALL";
+  const isResponse = frame.type === "RESPONSE";
+  const isArtifact = frame.type === "ARTIFACT";
 
   const card = (
     <div
@@ -94,9 +115,81 @@ function TraceCard({ frame, withMotion }: { frame: AgentFrame; withMotion: boole
         {isTool ? <Wrench className="h-3.5 w-3.5 text-zinc-500" /> : null}
         <span className="font-semibold text-zinc-300">{frame.type}</span>
       </div>
-      <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-zinc-400">
-        {JSON.stringify(frame.payload, null, 2)}
-      </pre>
+      {isResponse ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-[10px] text-zinc-500">
+            <span className="rounded border border-white/[0.12] px-1.5 py-0.5 font-mono">role: {String(frame.payload.role ?? "assistant")}</span>
+            <span className="rounded border border-white/[0.12] px-1.5 py-0.5 font-mono">final: {String(Boolean(frame.payload.final))}</span>
+          </div>
+          <div className="rounded-lg border border-white/[0.08] bg-black/20 px-2.5 py-2 text-[12px] leading-relaxed text-zinc-300 whitespace-pre-wrap break-words">
+            {String(frame.payload.content ?? "")}
+          </div>
+        </div>
+      ) : isThought ? (
+        <div className="space-y-2">
+          <div className="text-[10px] text-zinc-500">
+            <span className="rounded border border-white/[0.12] px-1.5 py-0.5 font-mono">
+              source: {String(frame.payload.source ?? "reasoning")}
+            </span>
+          </div>
+          <div className="rounded-lg border border-white/[0.08] bg-black/20 px-2.5 py-2 text-[12px] leading-relaxed text-zinc-300 whitespace-pre-wrap break-words">
+            {String(frame.payload.content ?? "")}
+          </div>
+        </div>
+      ) : isTool ? (
+        <div className="space-y-2">
+          <div className="text-[10px] text-zinc-500 font-mono break-all">
+            id: {String(frame.payload.tool_call_id ?? "—")} | name: {String(frame.payload.name ?? "unknown")}
+          </div>
+          <div>
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500">args</div>
+            <pre className="whitespace-pre-wrap break-words rounded-lg border border-white/[0.08] bg-zinc-950/80 p-2 text-[11px] leading-relaxed text-zinc-300">
+              {toPrettyJson(frame.payload.args ?? {})}
+            </pre>
+          </div>
+          <div>
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500">result</div>
+            <pre className="whitespace-pre-wrap break-words rounded-lg border border-white/[0.08] bg-zinc-950/80 p-2 text-[11px] leading-relaxed text-zinc-300">
+              {frame.payload.result == null ? "null" : toPrettyJson(frame.payload.result)}
+            </pre>
+          </div>
+        </div>
+      ) : isArtifact ? (
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-1 text-[10px] text-zinc-500">
+            <span>artifact_id</span>
+            <span className="break-all text-right font-mono text-zinc-300">{String(frame.payload.artifact_id ?? "—")}</span>
+            <span>source_tool</span>
+            <span className="break-all text-right font-mono text-zinc-300">{String(frame.payload.source_tool ?? "—")}</span>
+            <span>artifact_type</span>
+            <span className="text-right font-mono text-zinc-300">{String(frame.payload.artifact_type ?? "—")}</span>
+            <span>mime</span>
+            <span className="text-right font-mono text-zinc-300">{String(frame.payload.mime ?? "—")}</span>
+            <span>truncated</span>
+            <span className="text-right font-mono text-zinc-300">{String(Boolean(frame.payload.truncated))}</span>
+            <span>original_length</span>
+            <span className="text-right font-mono text-zinc-300">{String(frame.payload.original_length ?? "—")}</span>
+            <span>blocked</span>
+            <span className="text-right font-mono text-zinc-300">{String(Boolean(frame.payload.blocked))}</span>
+          </div>
+          <div>
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500">security_policy</div>
+            <pre className="whitespace-pre-wrap break-words rounded-lg border border-white/[0.08] bg-zinc-950/80 p-2 text-[11px] leading-relaxed text-zinc-300">
+              {toPrettyJson(frame.payload.security_policy ?? null)}
+            </pre>
+          </div>
+          <div>
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500">content</div>
+            <pre className="whitespace-pre-wrap break-words rounded-lg border border-white/[0.08] bg-zinc-950/80 p-2 text-[11px] leading-relaxed text-zinc-300">
+              {frame.payload.content == null ? "null" : toPrettyJson(frame.payload.content)}
+            </pre>
+          </div>
+        </div>
+      ) : (
+        <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-zinc-400">
+          {JSON.stringify(frame.payload, null, 2)}
+        </pre>
+      )}
     </div>
   );
 
@@ -177,6 +270,12 @@ export function ReasoningTrace(props: Props) {
     setIsAtBottom(remaining <= STICKY_BOTTOM_THRESHOLD_PX);
   };
 
+  const scrollToBottom = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
+
   const scrollClass =
     variant === "embedded"
       ? "hermes-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-3"
@@ -224,8 +323,21 @@ export function ReasoningTrace(props: Props) {
         <div className="shrink-0 border-b border-[var(--border-hairline)] px-3 py-2.5 text-[13px] font-medium text-zinc-200">
           {t.panes.reasoning}
         </div>
-        <div ref={scrollContainerRef} className={scrollClass} onScroll={onScroll}>
-          {traceBody}
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <div ref={scrollContainerRef} className={`${scrollClass} h-full`} onScroll={onScroll}>
+            {traceBody}
+          </div>
+          {!isAtBottom ? (
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              className="absolute bottom-3 right-3 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-zinc-300 shadow-lg shadow-black/30 backdrop-blur-md transition hover:bg-white/[0.06] hover:text-zinc-100"
+              title={t.labels.scrollToBottom}
+              aria-label={t.labels.scrollToBottom}
+            >
+              <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+            </button>
+          ) : null}
         </div>
       </div>
     );
@@ -240,8 +352,21 @@ export function ReasoningTrace(props: Props) {
         <ChevronDown className={`h-4 w-4 shrink-0 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`} />
       </Collapsible.Trigger>
       <Collapsible.Content className="border-t border-[var(--border-hairline)]">
-        <div ref={scrollContainerRef} className={scrollClass} onScroll={onScroll}>
-          {traceBody}
+        <div className="relative">
+          <div ref={scrollContainerRef} className={scrollClass} onScroll={onScroll}>
+            {traceBody}
+          </div>
+          {!isAtBottom ? (
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              className="absolute bottom-3 right-3 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-zinc-300 shadow-lg shadow-black/30 backdrop-blur-md transition hover:bg-white/[0.06] hover:text-zinc-100"
+              title={t.labels.scrollToBottom}
+              aria-label={t.labels.scrollToBottom}
+            >
+              <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+            </button>
+          ) : null}
         </div>
       </Collapsible.Content>
     </Collapsible.Root>

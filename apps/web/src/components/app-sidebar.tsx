@@ -11,7 +11,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 import { useTranslations } from "@/hooks/use-translations";
 import { useUiStore } from "@/stores/ui-store";
@@ -27,6 +28,7 @@ type NavItem = {
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const { t, locale, setLocale } = useTranslations();
   const h = t.hub;
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
@@ -69,6 +71,26 @@ export function AppSidebar() {
     },
   ];
 
+  useEffect(() => {
+    const warmupRoutes = ["/insights", "/skills", "/orchestration"];
+    const idle = (cb: () => void) => {
+      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+        const id = (window as Window & { requestIdleCallback: (callback: () => void) => number }).requestIdleCallback(cb);
+        return () => {
+          const cancel = (window as Window & { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
+          cancel?.(id);
+        };
+      }
+      const t = globalThis.setTimeout(cb, 300);
+      return () => globalThis.clearTimeout(t);
+    };
+
+    const cancel = idle(() => {
+      warmupRoutes.forEach((href) => router.prefetch(href));
+    });
+    return cancel;
+  }, [router]);
+
   return (
     <aside
       className={`hermes-sidebar flex shrink-0 flex-col border-r border-[var(--border-hairline)] bg-[var(--bg-sidebar)] transition-[width] duration-200 ease-out ${
@@ -77,7 +99,7 @@ export function AppSidebar() {
       aria-label={h.navAria}
     >
       {/* Product mark — ChatGPT / Cursor–style top zone */}
-      <div className="flex h-12 shrink-0 items-center border-b border-[var(--border-hairline)] px-2">
+      <div className="flex h-16 shrink-0 items-center border-b border-[var(--border-hairline)] px-2">
         <Link
           href="/"
           className={`flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.04] ${
