@@ -88,27 +88,86 @@ export type Messages = {
     insights: {
       title: string;
       subtitle: string;
+      sectionOverview: string;
       sectionOptimizationLog: string;
       sectionToolMetrics: string;
+      sectionTimeseries: string;
+      sectionToolsTop: string;
+      sectionTraceDrilldown: string;
+      sectionClarify: string;
       loading: string;
+      noData: string;
       sessionPrefix: string;
+      windowLabel: string;
+      bucketLabel: string;
+      traceIdLabel: string;
+      loadTrace: string;
+      kpiTurns: string;
+      kpiTurnSuccessRate: string;
+      kpiP50: string;
+      kpiP95: string;
+      kpiToolSuccessRate: string;
+      kpiClarifyTimeoutRate: string;
       tableTool: string;
       tableCalls: string;
       tableSuccesses: string;
+      tableAvgLatency: string;
+      tableSuccessRate: string;
       emptyMetrics: string;
     };
     skills: {
       title: string;
       subtitle: string;
       editorLink: string;
+      languageToggleAria: string;
+      langZh: string;
+      langEn: string;
       sectionCatalog: string;
       sectionInstalled: string;
       tablePackage: string;
       tableVersion: string;
+      tableEnabled: string;
+      tableRuntimeSync: string;
       remove: string;
+      delete: string;
       sectionInstallJson: string;
       placeholderJson: string;
       install: string;
+      searchPlaceholder: string;
+      itemsCountSuffix: string;
+      installFromHubTitle: string;
+      searchHubPlaceholder: string;
+      searchHubButton: string;
+      searchHubResultsTitle: string;
+      useThisIdentifier: string;
+      inspectThisSkill: string;
+      inspectResultTitle: string;
+      searchHubNoResult: string;
+      paginationPrev: string;
+      paginationNext: string;
+      paginationPagePrefix: string;
+      paginationTotalPrefix: string;
+      pageSizeUnit: string;
+      installFromHubPlaceholder: string;
+      installViaCli: string;
+      cleanupCatalogShadows: string;
+      cleanupDonePrefix: string;
+      cleanupDoneSuffix: string;
+      deleteCatalogDonePrefix: string;
+      installFromHubHint: string;
+      installFromHubEmptyError: string;
+      installFromHubOkPrefix: string;
+      installFromHubOkImportedPrefix: string;
+      installFromHubOkImportedSuffix: string;
+      skillEnabledSynced: string;
+      skillDisabledRuntime: string;
+      installedBadge: string;
+      installing: string;
+      installedState: string;
+      deleting: string;
+      loadingShort: string;
+      runtimePending: string;
+      removing: string;
       installedOk: string;
       uninstalledOk: string;
       sectionDepGraph: string;
@@ -278,27 +337,86 @@ export const messages: Record<Locale, Messages> = {
       insights: {
         title: "洞察 — 越用越强",
         subtitle: "策略变更是主叙事：红删绿增；工具指标为辅助信号。",
+        sectionOverview: "运行总览",
         sectionOptimizationLog: "自动优化日志（Diff）",
         sectionToolMetrics: "工具调用聚合（辅助）",
+        sectionTimeseries: "时序趋势",
+        sectionToolsTop: "工具健康排行",
+        sectionTraceDrilldown: "Trace 下钻",
+        sectionClarify: "Clarify 洞察",
         loading: "加载中…",
+        noData: "暂无数据",
         sessionPrefix: "会话",
+        windowLabel: "窗口",
+        bucketLabel: "粒度",
+        traceIdLabel: "Trace ID",
+        loadTrace: "加载 Trace",
+        kpiTurns: "会话轮次",
+        kpiTurnSuccessRate: "轮次成功率",
+        kpiP50: "P50 延迟",
+        kpiP95: "P95 延迟",
+        kpiToolSuccessRate: "工具成功率",
+        kpiClarifyTimeoutRate: "Clarify 超时率",
         tableTool: "工具",
         tableCalls: "调用",
         tableSuccesses: "成功",
+        tableAvgLatency: "平均延迟(ms)",
+        tableSuccessRate: "成功率",
         emptyMetrics: "暂无聚合数据（与 Agent 对话并触发工具后会累积）。",
       },
       skills: {
         title: "Skill Hub",
         subtitle: "`skill.json` 由服务端 JSON Schema 校验；Mock 包也必须合规。",
         editorLink: "编辑器 / 沙箱（D2）",
+        languageToggleAria: "技能页语言切换",
+        langZh: "中文",
+        langEn: "EN",
         sectionCatalog: "目录（catalog）",
         sectionInstalled: "已安装",
         tablePackage: "包",
         tableVersion: "版本",
+        tableEnabled: "启用",
+        tableRuntimeSync: "运行时同步",
         remove: "移除",
+        delete: "删除",
         sectionInstallJson: "从 JSON 安装（校验）",
         placeholderJson: "粘贴完整 skill.json（需符合 packages/skill-spec/schema.json）",
         install: "安装",
+        searchPlaceholder: "按名称 / 描述 / 标签搜索技能",
+        itemsCountSuffix: "项",
+        installFromHubTitle: "从 Hermes Hub 安装",
+        searchHubPlaceholder: "搜索技能名称",
+        searchHubButton: "搜索 Hub",
+        searchHubResultsTitle: "搜索结果",
+        useThisIdentifier: "使用该标识",
+        inspectThisSkill: "查看详情",
+        inspectResultTitle: "技能详情预览",
+        searchHubNoResult: "未找到匹配项，请尝试更具体关键词。",
+        paginationPrev: "上一页",
+        paginationNext: "下一页",
+        paginationPagePrefix: "第",
+        paginationTotalPrefix: "共",
+        pageSizeUnit: "页",
+        installFromHubPlaceholder: "请输入技能标识",
+        installViaCli: "通过 CLI 安装",
+        cleanupCatalogShadows: "清理目录阴影项",
+        cleanupDonePrefix: "目录清理完成，已移除",
+        cleanupDoneSuffix: "个阴影版本项。",
+        deleteCatalogDonePrefix: "已删除目录项：",
+        installFromHubHint: "服务端会执行 hermes skills install <identifier>，然后自动把运行时技能同步到 UI 数据库。",
+        installFromHubEmptyError: "请先输入 Hub 技能标识。",
+        installFromHubOkPrefix: "Hub 安装成功：",
+        installFromHubOkImportedPrefix: "已导入",
+        installFromHubOkImportedSuffix: "个运行时技能到控制面。",
+        skillEnabledSynced: "技能已启用并同步到运行时。",
+        skillDisabledRuntime: "技能已在运行时禁用。",
+        installedBadge: "已安装",
+        installing: "安装中...",
+        installedState: "已安装",
+        deleting: "删除中...",
+        loadingShort: "加载中...",
+        runtimePending: "待同步",
+        removing: "移除中...",
         installedOk: "已安装。",
         uninstalledOk: "已卸载。",
         sectionDepGraph: "依赖图（D3）",
@@ -467,27 +585,86 @@ export const messages: Record<Locale, Messages> = {
       insights: {
         title: "Insights — stronger with use",
         subtitle: "Policy changes are the story (red/green diff); tool metrics are secondary.",
+        sectionOverview: "Overview",
         sectionOptimizationLog: "Auto-optimization log (Diff)",
         sectionToolMetrics: "Tool call rollup (auxiliary)",
+        sectionTimeseries: "Time series",
+        sectionToolsTop: "Top tool health",
+        sectionTraceDrilldown: "Trace drilldown",
+        sectionClarify: "Clarify analytics",
         loading: "Loading…",
+        noData: "No data",
         sessionPrefix: "session",
+        windowLabel: "window",
+        bucketLabel: "bucket",
+        traceIdLabel: "Trace ID",
+        loadTrace: "Load trace",
+        kpiTurns: "Turns",
+        kpiTurnSuccessRate: "Turn success rate",
+        kpiP50: "P50 latency",
+        kpiP95: "P95 latency",
+        kpiToolSuccessRate: "Tool success rate",
+        kpiClarifyTimeoutRate: "Clarify timeout rate",
         tableTool: "tool",
         tableCalls: "calls",
         tableSuccesses: "successes",
+        tableAvgLatency: "avg latency(ms)",
+        tableSuccessRate: "success rate",
         emptyMetrics: "No rollup yet (chat with the agent and use tools to accumulate).",
       },
       skills: {
         title: "Skill Hub",
         subtitle: "`skill.json` is validated server-side with JSON Schema; mock packages must comply too.",
         editorLink: "Editor / sandbox (D2)",
+        languageToggleAria: "Skills language switch",
+        langZh: "中文",
+        langEn: "EN",
         sectionCatalog: "Catalog",
         sectionInstalled: "Installed",
         tablePackage: "package",
         tableVersion: "version",
+        tableEnabled: "enabled",
+        tableRuntimeSync: "runtime sync",
         remove: "Remove",
+        delete: "Delete",
         sectionInstallJson: "Install from JSON (validated)",
         placeholderJson: "Paste a full skill.json (must match packages/skill-spec/schema.json)",
         install: "Install",
+        searchPlaceholder: "Search skills by name / description / tags",
+        itemsCountSuffix: "items",
+        installFromHubTitle: "Install From Hermes Hub",
+        searchHubPlaceholder: "Search skill keywords first (e.g. creator / github / code)",
+        searchHubButton: "Search Hub",
+        searchHubResultsTitle: "Search results",
+        useThisIdentifier: "Use this identifier",
+        inspectThisSkill: "Inspect details",
+        inspectResultTitle: "Skill detail preview",
+        searchHubNoResult: "No matches found. Try a more specific keyword.",
+        paginationPrev: "Prev",
+        paginationNext: "Next",
+        paginationPagePrefix: "Page",
+        paginationTotalPrefix: "Total",
+        pageSizeUnit: "page",
+        installFromHubPlaceholder: "xitter  or  openai/skills/skill-creator",
+        installViaCli: "Install via CLI",
+        cleanupCatalogShadows: "Cleanup Catalog Shadows",
+        cleanupDonePrefix: "Catalog cleanup done. Removed",
+        cleanupDoneSuffix: "shadow version entries.",
+        deleteCatalogDonePrefix: "Deleted catalog item:",
+        installFromHubHint: "Server executes hermes skills install <identifier>, then auto-syncs runtime skills into UI DB.",
+        installFromHubEmptyError: "Please input a hub skill identifier.",
+        installFromHubOkPrefix: "Hub install succeeded:",
+        installFromHubOkImportedPrefix: "Imported",
+        installFromHubOkImportedSuffix: "runtime skills into control plane.",
+        skillEnabledSynced: "Skill enabled and synced to runtime.",
+        skillDisabledRuntime: "Skill disabled in runtime.",
+        installedBadge: "Installed",
+        installing: "Installing...",
+        installedState: "Installed",
+        deleting: "Deleting...",
+        loadingShort: "...",
+        runtimePending: "pending",
+        removing: "Removing...",
         installedOk: "Installed.",
         uninstalledOk: "Uninstalled.",
         sectionDepGraph: "Dependency graph (D3)",

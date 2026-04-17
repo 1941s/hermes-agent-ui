@@ -74,9 +74,9 @@ def require_scope(auth_ctx: AuthContext, required_scope: str) -> None:
 def get_current_user(
     auth_token: str | None = None,
     authorization: str | None = Header(default=None, alias="Authorization"),
-    settings: Settings | None = None,
+    settings: Any = None,
 ) -> AuthContext:
-    runtime_settings = settings or load_settings()
+    runtime_settings = settings if isinstance(settings, Settings) else load_settings()
     if not runtime_settings.auth_enabled:
         return AuthContext(user_id="anonymous", scopes=set(), claims={})
 

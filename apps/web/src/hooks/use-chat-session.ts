@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { SessionManager } from "@/lib/session-manager";
+import { SessionManager, type DeletedSessionSnapshot } from "@/lib/session-manager";
 import type { ChatSessionMeta } from "@/types";
 
 export function useChatSession() {
@@ -59,6 +59,41 @@ export function useChatSession() {
     });
   }, []);
 
+  const renameSession = useCallback(
+    async (id: string, title: string) => {
+      await SessionManager.renameSession(id, title);
+      await refreshSessions();
+    },
+    [refreshSessions],
+  );
+
+  const deleteSessionWithSnapshot = useCallback(
+    async (id: string): Promise<DeletedSessionSnapshot | null> => {
+      const snapshot = await SessionManager.deleteSessionWithSnapshot(id);
+      let list = await SessionManager.listSessions();
+      if (list.length === 0) {
+        await SessionManager.createSession();
+        list = await SessionManager.listSessions();
+      }
+      setSessions(list);
+      setSessionId((current) => {
+        if (current !== id) return current;
+        return list[0].session_id;
+      });
+      return snapshot;
+    },
+    [],
+  );
+
+  const restoreSession = useCallback(
+    async (snapshot: DeletedSessionSnapshot) => {
+      await SessionManager.restoreSession(snapshot);
+      await refreshSessions();
+      setSessionId(snapshot.meta.session_id);
+    },
+    [refreshSessions],
+  );
+
   return {
     ready,
     sessionId,
@@ -66,6 +101,9 @@ export function useChatSession() {
     createSession,
     selectSession,
     deleteSession,
+    renameSession,
+    deleteSessionWithSnapshot,
+    restoreSession,
     refreshSessions,
   };
 }

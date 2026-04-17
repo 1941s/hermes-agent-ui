@@ -10,6 +10,11 @@ export type SessionTurnsRow = {
   turns: ChatTurn[];
 };
 
+export type DeletedSessionSnapshot = {
+  meta: ChatSessionMeta;
+  turns: ChatTurn[];
+};
+
 interface HermesDBSchema extends DBSchema {
   sessions: {
     key: string;
@@ -70,6 +75,29 @@ export const SessionManager = {
     await tx.objectStore("sessions").delete(sessionId);
     await tx.objectStore("turns").delete(sessionId);
     await tx.done;
+  },
+
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    const prev = await this.getSession(sessionId);
+    if (!prev) return;
+    await this.upsertSession({
+      ...prev,
+      title: title.trim() || prev.title,
+      updated_at: Date.now(),
+    });
+  },
+
+  async deleteSessionWithSnapshot(sessionId: string): Promise<DeletedSessionSnapshot | null> {
+    const meta = await this.getSession(sessionId);
+    if (!meta) return null;
+    const turns = await this.getTurns(sessionId);
+    await this.deleteSession(sessionId);
+    return { meta, turns };
+  },
+
+  async restoreSession(snapshot: DeletedSessionSnapshot): Promise<void> {
+    await this.upsertSession(snapshot.meta);
+    await this.putTurns(snapshot.meta.session_id, snapshot.turns);
   },
 
   async getTurns(sessionId: string): Promise<ChatTurn[]> {

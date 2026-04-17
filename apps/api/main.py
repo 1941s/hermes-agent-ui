@@ -17,10 +17,12 @@ import os
 import queue
 import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.request
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from threading import Thread
 from typing import Any, AsyncIterator
 from uuid import uuid4
@@ -141,6 +143,36 @@ _clarify_lock = threading.Lock()
 # Session id → queue for user choice while `clarify` tool callback is blocked.
 _clarify_pending: dict[str, queue.Queue[str]] = {}
 CLARIFY_WAIT_SEC = int(os.getenv("HERMES_CLARIFY_TIMEOUT_SEC", "3600"))
+_obs_event_queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=5000)
+_obs_worker_stop = threading.Event()
+_obs_worker: threading.Thread | None = None
+_clarify_trace_index: dict[str, str] = {}
+
+
+def _emit_observability(event: dict[str, Any]) -> None:
+    try:
+        _obs_event_queue.put_nowait(event)
+    except queue.Full:
+        LOGGER.debug("obs queue full; dropping event kind=%s", event.get("kind"))
+
+
+def _observability_worker() -> None:
+    while not _obs_worker_stop.is_set():
+        try:
+            event = _obs_event_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        if event is None:
+            break
+        try:
+            try:
+                from .sidecar_store import process_observability_event
+            except ImportError:
+                from sidecar_store import process_observability_event  # type: ignore
+
+            process_observability_event(event)
+        except Exception:
+            LOGGER.debug("process_observability_event failed", exc_info=True)
 
 
 def _explicit_openai_client_kwargs(request: WsRequest) -> dict[str, str]:
@@ -331,6 +363,13 @@ class HermesServiceWrapper:
                         pick = q.get(timeout=float(CLARIFY_WAIT_SEC))
                     return pick
                 except queue.Empty:
+                    emit(
+                        FrameType.STATUS,
+                        {
+                            "state": "clarify_timeout",
+                            "message": "Clarify wait timed out.",
+                        },
+                    )
                     return json.dumps(
                         {"error": "Timed out waiting for clarify selection."},
                         ensure_ascii=False,
@@ -412,6 +451,20 @@ class ModelConnectionTestRequest(BaseModel):
 @app.on_event("startup")
 async def on_startup() -> None:
     _init_db()
+    global _obs_worker
+    if _obs_worker is None or not _obs_worker.is_alive():
+        _obs_worker_stop.clear()
+        _obs_worker = threading.Thread(target=_observability_worker, name="obs-worker", daemon=True)
+        _obs_worker.start()
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    _obs_worker_stop.set()
+    try:
+        _obs_event_queue.put_nowait(None)
+    except queue.Full:
+        pass
 
 
 @app.get("/health")
@@ -670,7 +723,7 @@ def _init_db() -> None:
         seed_demo_data(conn)
 
 
-def _persist_frame(session_id: str, frame: dict[str, Any]) -> None:
+def _persist_frame(session_id: str, frame: dict[str, Any], *, user_id: str | None = None, trace_id: str | None = None) -> None:
     seq = int(frame.get("seq", -1))
     with _db_connect() as conn:
         conn.execute(
@@ -693,6 +746,17 @@ def _persist_frame(session_id: str, frame: dict[str, Any]) -> None:
         conn.execute(
             "DELETE FROM ws_frames WHERE created_at < datetime('now', ?)",
             (f"-{REPLAY_RETENTION_HOURS} hours",),
+        )
+    if user_id and trace_id:
+        _emit_observability(
+            {
+                "kind": "frame",
+                "trace_id": trace_id,
+                "user_id": user_id,
+                "session_id": session_id,
+                "frame": frame,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
         )
 
 
@@ -726,6 +790,40 @@ def _next_seq_for_session(session_id: str) -> int:
         ).fetchone()
     max_seq = int(row[0]) if row else -1
     return max_seq + 1
+
+
+def _inject_enabled_skills_context(request: WsRequest, user_id: str) -> WsRequest:
+    """
+    Bridge UI control-plane skill toggles into runtime prompt context.
+    This keeps behavior deterministic even when runtime registry adapters vary by environment.
+    """
+    try:
+        try:
+            from .sidecar_store import list_enabled_skills, reconcile_enabled_skills_runtime
+        except ImportError:
+            from sidecar_store import list_enabled_skills, reconcile_enabled_skills_runtime  # type: ignore
+        # Best-effort runtime reconciliation so skill tools observe control-plane state.
+        reconcile_enabled_skills_runtime(user_id)
+        enabled = list_enabled_skills(user_id)
+    except Exception:
+        LOGGER.debug("list_enabled_skills failed", exc_info=True)
+        return request
+    if not enabled:
+        return request
+    names = [str(item.get("package_name") or "") for item in enabled if str(item.get("package_name") or "").strip()]
+    if not names:
+        return request
+    addon = (
+        "\n\n[ENABLED_SKILLS]\n"
+        + "\n".join(f"- {name}" for name in names)
+        + "\n[/ENABLED_SKILLS]\n"
+    )
+    merged = (request.system_prompt or "").strip()
+    if merged:
+        merged = f"{merged}\n{addon}"
+    else:
+        merged = addon.strip()
+    return request.model_copy(update={"system_prompt": merged})
 
 
 def _bind_or_verify_session_owner(session_id: str, user_id: str) -> bool:
@@ -893,9 +991,9 @@ async def ws_agent(websocket: WebSocket) -> None:
             seq += 1
             await websocket.send_text(json.dumps(hb.model_dump(mode="json")))
 
-    async def send_and_store(session_id: str, frame: dict[str, Any]) -> None:
+    async def send_and_store(session_id: str, frame: dict[str, Any], *, user_id: str | None = None, trace_id: str | None = None) -> None:
         await websocket.send_text(json.dumps(frame))
-        _persist_frame(session_id, frame)
+        _persist_frame(session_id, frame, user_id=user_id, trace_id=trace_id)
 
     async def send_ws_error(session_id: str, code: str, message: str, detail: dict[str, Any] | None = None) -> None:
         frame = ErrorFrame(
@@ -906,8 +1004,75 @@ async def ws_agent(websocket: WebSocket) -> None:
         )
         await websocket.send_text(json.dumps(frame.model_dump(mode="json")))
 
-    async def consume_agent_stream(req: WsRequest, user_id: str, trace_id: str, seq: int) -> int:
+    async def drain_agent_stream_after_disconnect(
+        req: WsRequest,
+        user_id: str,
+        trace_id: str,
+        seq: int,
+        agen: AsyncIterator[StreamEvent],
+        ev_task: asyncio.Task[StreamEvent],
+    ) -> tuple[int, dict[str, int]]:
+        """
+        Continue running the current turn even after client disconnects.
+        We only persist frames (for replay), never send on websocket.
+        """
+        tool_started_at: dict[str, float] = {}
+        counters = {"frames": 0, "response_chunks": 0, "errors": 0, "tool_calls": 0}
+        while True:
+            try:
+                event = await ev_task
+            except StopAsyncIteration:
+                break
+            frame = _to_ws_frame(req.session_id, trace_id, seq, event)
+            frame_type = str(frame.get("type") or "")
+            payload = frame.get("payload")
+            counters["frames"] += 1
+            if frame_type == "RESPONSE":
+                counters["response_chunks"] += 1
+            elif frame_type == "ERROR":
+                counters["errors"] += 1
+            elif frame_type == "TOOL_CALL" and isinstance(payload, dict):
+                counters["tool_calls"] += 1
+                tool_call_id = str(payload.get("tool_call_id") or "")
+                tool_name = str(payload.get("name") or "unknown")
+                if payload.get("result") is None:
+                    tool_started_at[tool_call_id] = time.perf_counter()
+                    _emit_observability(
+                        {
+                            "kind": "tool_start",
+                            "trace_id": trace_id,
+                            "user_id": user_id,
+                            "session_id": req.session_id,
+                            "tool_call_id": tool_call_id,
+                            "tool_name": tool_name,
+                            "started_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                else:
+                    started = tool_started_at.pop(tool_call_id, None)
+                    latency_ms = int((time.perf_counter() - started) * 1000) if started else 0
+                    result_text = str(payload.get("result") or "")
+                    err_like = result_text.strip().upper().startswith("ERROR") or "traceback" in result_text.lower()
+                    _emit_observability(
+                        {
+                            "kind": "tool_complete",
+                            "trace_id": trace_id,
+                            "tool_call_id": tool_call_id,
+                            "latency_ms": latency_ms,
+                            "success": not err_like,
+                            "error_code": "tool_error" if err_like else None,
+                            "completed_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+            _persist_frame(req.session_id, frame, user_id=user_id, trace_id=trace_id)
+            seq += 1
+            ev_task = asyncio.create_task(agen.__anext__())
+        return seq, counters
+
+    async def consume_agent_stream(req: WsRequest, user_id: str, trace_id: str, seq: int) -> tuple[int, dict[str, int]]:
         """Stream `service.run` while still dequeuing `clarify_pick` / control messages from `incoming`."""
+        tool_started_at: dict[str, float] = {}
+        counters = {"frames": 0, "response_chunks": 0, "errors": 0, "tool_calls": 0}
         agen = service.run(req, user_id=user_id).__aiter__()
         ev_task = asyncio.create_task(agen.__anext__())
         while True:
@@ -922,16 +1087,83 @@ async def ws_agent(websocket: WebSocket) -> None:
                 except StopAsyncIteration:
                     break
                 frame = _to_ws_frame(req.session_id, trace_id, seq, event)
+                frame_type = str(frame.get("type") or "")
+                payload = frame.get("payload")
+                counters["frames"] += 1
+                if frame_type == "RESPONSE":
+                    counters["response_chunks"] += 1
+                elif frame_type == "ERROR":
+                    counters["errors"] += 1
+                elif frame_type == "TOOL_CALL" and isinstance(payload, dict):
+                    counters["tool_calls"] += 1
+                    tool_call_id = str(payload.get("tool_call_id") or "")
+                    tool_name = str(payload.get("name") or "unknown")
+                    if payload.get("result") is None:
+                        tool_started_at[tool_call_id] = time.perf_counter()
+                        _emit_observability(
+                            {
+                                "kind": "tool_start",
+                                "trace_id": trace_id,
+                                "user_id": user_id,
+                                "session_id": req.session_id,
+                                "tool_call_id": tool_call_id,
+                                "tool_name": tool_name,
+                                "started_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                    else:
+                        started = tool_started_at.pop(tool_call_id, None)
+                        latency_ms = int((time.perf_counter() - started) * 1000) if started else 0
+                        result_text = str(payload.get("result") or "")
+                        err_like = result_text.strip().upper().startswith("ERROR") or "traceback" in result_text.lower()
+                        _emit_observability(
+                            {
+                                "kind": "tool_complete",
+                                "trace_id": trace_id,
+                                "tool_call_id": tool_call_id,
+                                "latency_ms": latency_ms,
+                                "success": not err_like,
+                                "error_code": "tool_error" if err_like else None,
+                                "completed_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                elif frame_type == "STATUS" and isinstance(payload, dict):
+                    state = str(payload.get("state") or "")
+                    if state == "waiting_clarify":
+                        _clarify_trace_index[req.session_id] = trace_id
+                        _emit_observability(
+                            {
+                                "kind": "clarify_start",
+                                "trace_id": trace_id,
+                                "user_id": user_id,
+                                "session_id": req.session_id,
+                                "wait_started_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                    elif state == "clarify_timeout":
+                        _emit_observability(
+                            {
+                                "kind": "clarify_resolve",
+                                "trace_id": trace_id,
+                                "picked_value": "",
+                                "timed_out": True,
+                                "wait_ms": 0,
+                                "picked_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
                 seq += 1
-                await send_and_store(req.session_id, frame)
+                await send_and_store(req.session_id, frame, user_id=user_id, trace_id=trace_id)
                 ev_task = asyncio.create_task(agen.__anext__())
             else:
                 raw_inc = msg_task.result()
                 if raw_inc is None:
-                    ev_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await ev_task
-                    raise WebSocketDisconnect()
+                    LOGGER.info("Client disconnected while turn active; continue turn in background for replay.")
+                    seq, drained = await drain_agent_stream_after_disconnect(req, user_id, trace_id, seq, agen, ev_task)
+                    counters["frames"] += drained["frames"]
+                    counters["response_chunks"] += drained["response_chunks"]
+                    counters["errors"] += drained["errors"]
+                    counters["tool_calls"] += drained["tool_calls"]
+                    break
                 try:
                     data = json.loads(raw_inc)
                 except json.JSONDecodeError:
@@ -974,10 +1206,21 @@ async def ws_agent(websocket: WebSocket) -> None:
                     continue
                 try:
                     q.put_nowait(pick)
+                    pick_trace = _clarify_trace_index.get(req.session_id, trace_id)
+                    _emit_observability(
+                        {
+                            "kind": "clarify_resolve",
+                            "trace_id": pick_trace,
+                            "picked_value": pick,
+                            "timed_out": False,
+                            "wait_ms": 0,
+                            "picked_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
                 except queue.Full:
                     await send_ws_error(req.session_id, "CLARIFY_OVERFLOW", "Clarify queue full.")
                 continue
-        return seq
+        return seq, counters
 
     async def run_benchmark_stream(session_id: str, trace_id: str, seq_start: int) -> int:
         seq = seq_start
@@ -1076,6 +1319,18 @@ async def ws_agent(websocket: WebSocket) -> None:
                     continue
                 try:
                     q.put_nowait(pick)
+                    pick_trace = _clarify_trace_index.get(req.session_id)
+                    if pick_trace:
+                        _emit_observability(
+                            {
+                                "kind": "clarify_resolve",
+                                "trace_id": pick_trace,
+                                "picked_value": pick,
+                                "timed_out": False,
+                                "wait_ms": 0,
+                                "picked_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
                 except queue.Full:
                     await send_ws_error(req.session_id, "CLARIFY_OVERFLOW", "Clarify queue full.")
                 continue
@@ -1136,6 +1391,7 @@ async def ws_agent(websocket: WebSocket) -> None:
                         {"missing_fields": missing},
                     )
                     continue
+            req = _inject_enabled_skills_context(req, user_id)
 
             if heartbeat_task is not None and not heartbeat_task.done():
                 heartbeat_task.cancel()
@@ -1152,12 +1408,37 @@ async def ws_agent(websocket: WebSocket) -> None:
                     message=prompt_service.render("agent/think_status.j2"),
                 ),
             ).model_dump(mode="json")
-            await send_and_store(req.session_id, thinking_frame)
+            _emit_observability(
+                {
+                    "kind": "turn_start",
+                    "trace_id": trace_id,
+                    "user_id": user_id,
+                    "session_id": req.session_id,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "model_provider": "anthropic" if "/anthropic" in (req.model_base_url or "").lower() else "openai",
+                    "model_name": req.model_name or "",
+                }
+            )
+            turn_started = time.perf_counter()
+            await send_and_store(req.session_id, thinking_frame, user_id=user_id, trace_id=trace_id)
             seq += 1
 
             heartbeat_task = asyncio.create_task(send_heartbeat(req.session_id, trace_id))
 
-            await consume_agent_stream(req, user_id, trace_id, seq)
+            seq, counters = await consume_agent_stream(req, user_id, trace_id, seq)
+            _emit_observability(
+                {
+                    "kind": "turn_end",
+                    "trace_id": trace_id,
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
+                    "duration_ms": int((time.perf_counter() - turn_started) * 1000),
+                    "status": "completed" if counters.get("errors", 0) == 0 else "partial_error",
+                    "total_frames": counters.get("frames", 0),
+                    "response_chunks": counters.get("response_chunks", 0),
+                    "error_count": counters.get("errors", 0),
+                    "tool_calls": counters.get("tool_calls", 0),
+                }
+            )
     except WebSocketDisconnect:
         LOGGER.info("WebSocket disconnected.")
     except Exception as exc:

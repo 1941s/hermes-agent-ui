@@ -46,3 +46,17 @@ export async function apiDelete(path: string): Promise<void> {
     throw new Error(`${res.status} ${text}`);
   }
 }
+
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const { modelBaseUrl, modelApiKey } = getRuntimeConfig();
+  const res = await fetch(`${AGENT_API_BASE}${path}`, {
+    method: "PATCH",
+    headers: { ...headers(modelBaseUrl, modelApiKey), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${res.status} ${text}`);
+  }
+  return res.json() as Promise<T>;
+}

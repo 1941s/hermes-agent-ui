@@ -1,10 +1,11 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import dynamic from "next/dynamic";
 import { useMemo, useState } from "react";
 
 import { SiteChrome } from "@/components/site-chrome";
-import { TaskCanvas, type GraphPayload } from "@/components/task-canvas";
+import type { GraphPayload } from "@/components/task-canvas";
 import { useTranslations } from "@/hooks/use-translations";
 import { apiGet, apiPost } from "@/lib/agent-api";
 
@@ -13,6 +14,17 @@ const DEMO_SESSION = "demo-orchestration-session";
 type GraphResp = { session_id: string; revision: number; graph: GraphPayload };
 
 type Revisions = { revisions: number[]; max_revision: number | null };
+
+const TaskCanvas = dynamic(
+  () => import("@/components/task-canvas").then((m) => m.TaskCanvas),
+  {
+    loading: () => (
+      <div className="flex h-[min(70vh,560px)] w-full items-center justify-center rounded-lg border border-[var(--border-hairline)] bg-[var(--bg-canvas)] text-sm text-zinc-500">
+        Loading canvas...
+      </div>
+    ),
+  },
+);
 
 export default function OrchestrationPage() {
   const { t } = useTranslations();

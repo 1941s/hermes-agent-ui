@@ -22,7 +22,7 @@ export default function SkillEditorPage() {
         stdout: string;
         stderr: string;
         warning?: string;
-      }>("/skills/hermes-ui/demo-skill/sandbox-run", { code });
+      }>("/skills/hermes-ui/demo-skill/sandbox-run", { payload: { code } });
       setOut(JSON.stringify(res, null, 2));
     } catch (e) {
       setOut((e as Error).message);

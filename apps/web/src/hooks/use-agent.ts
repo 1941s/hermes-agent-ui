@@ -154,7 +154,11 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
       setStatus("idle");
       setError(null);
       resetHeartbeatTimeout();
-      if (outboundQueueRef.current.length === 0 && lastSeqRef.current >= 0 && lastResumeSeqRef.current !== lastSeqRef.current) {
+      if (
+        outboundQueueRef.current.length === 0 &&
+        sessionIdRef.current &&
+        (lastResumeSeqRef.current !== lastSeqRef.current || lastSeqRef.current < 0)
+      ) {
         const cfg = getRuntimeConfig();
         ws.send(
           JSON.stringify({

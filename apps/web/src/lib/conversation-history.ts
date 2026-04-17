@@ -36,7 +36,15 @@ export function appendFrameToTurns(turns: ChatTurn[], frame: AgentFrame): ChatTu
     return next;
   }
 
-  const pendingIdx = next.findIndex((t) => t.turn_id.startsWith(PENDING_TURN_PREFIX));
+  // Prefer the most recent pending turn. This avoids binding a fresh response
+  // to a stale pending message left behind by earlier disconnects.
+  let pendingIdx = -1;
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    if (next[i].turn_id.startsWith(PENDING_TURN_PREFIX)) {
+      pendingIdx = i;
+      break;
+    }
+  }
   if (pendingIdx >= 0) {
     const t = next[pendingIdx];
     next[pendingIdx] = {

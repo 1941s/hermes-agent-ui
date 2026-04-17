@@ -1,4 +1,4 @@
-﻿# Hermes-Agent: Industrial-Grade Web UI for High-Performance LLM Orchestration
+# Hermes-Agent: Industrial-Grade Web UI for High-Performance LLM Orchestration
 
 > **A production-oriented reference UI for [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)** — built for teams who ship **hermes-agent** in production and refuse to trade off **latency**, **security**, or **delivery velocity**. *Scope labels below separate **shipped** behavior from **preview / stub** surfaces so expectations stay honest on GitHub.*
 
@@ -83,8 +83,8 @@ Use this table when triaging issues or planning forks. **“Preview”** means U
 | --- | --- | --- |
 | **Chat** — WebSocket streaming, replay, `clarify` + `clarify_pick`, artifacts, sandboxed HTML | **Shipped** | Primary production path; aligns with upstream **hermes-agent** tool contracts. |
 | **IndexedDB** chat sessions | **Dev** | Client-side multi-session history; server replay remains owner-scoped. |
-| **Insights** hub | **Dev** | REST APIs wired (`/insights/...`); charts populate as the agent runs (sparse until used). |
-| **Skills** hub — catalog, install, JSON Schema validation | **Dev** | End-to-end against API. |
+| **Insights** hub | **Dev** | Includes `overview`, `timeseries`, `tools/top`, `tools/{name}/latency`, `traces/{trace_id}`, and `clarify` analytics; UI uses lazy-loaded charts and trace drilldown. |
+| **Skills** hub — visual catalog, one-click install, installed management | **Dev** | End-to-end against API with card-based install UX and installed state sync. |
 | **Skills** — editor / “Run in sandbox” | **Dev** | Placeholder execution only — **no** real isolation; see in-app copy. |
 | **Orchestration** hub — task graph, Time Travel, fork | **Preview** | **Mock / heuristic** snapshots for UX demos — **not** a full distributed orchestration engine. |
 
