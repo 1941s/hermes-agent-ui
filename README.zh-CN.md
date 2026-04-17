@@ -1,6 +1,6 @@
-# Hermes-Agent：面向高性能 LLM 编排的工业级 Web UI
+# Hermes-Agent UI：面向本地开发的工程级 Web UI
 
-> **面向 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 的生产级参考实现** —— 为需要在 **生产环境** 落地 Hermes Agent、且不愿在 **延迟**、**安全** 与 **交付速度** 之间妥协的团队而设计。本文与英文 [README.md](README.md) 同步维护；下表对 **已交付 / 预览 / 占位** 能力做诚实标注，便于 GitHub 访客建立正确预期（规范与接口以英文 README 为 SSOT）。
+> **面向 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 的本地优先工程实现** —— 主要服务个人开发者与小团队在本地快速迭代，同时保持架构边界、安全约束与文档质量的工程级标准。本文与英文 [README.md](README.md) 同步维护（英文为 SSOT）。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#许可证)
 [![Build](https://img.shields.io/badge/build-GitHub%20Actions-lightgrey.svg)](#可靠性与-ci-证据)
@@ -11,14 +11,16 @@
 
 **存在的意义 —— 四句话**
 
-- **60FPS 量级体验** —— 长推理 Trace 通过缓冲渲染与 **超过 500 行自动虚拟列表** 保持流畅。
+- **60FPS 量级体验** —— 长推理 Trace 通过缓冲渲染与 **自适应虚拟列表** 保持流畅。
 - **零信任多租户隔离** —— **JWT 范围权限**、**会话归属绑定**、**沙箱化 HTML 产物** 是一等公民，非事后补丁。
 - **产品级 Shell 与交互** —— **App Shell** 多区域 Hub（对话 / 洞察 / 技能 / 编排）、**IndexedDB** 多会话与历史恢复、与上游契约一致的 **`clarify` 同连接阻塞点选**（`clarify_pick` + 长连接合并调度）。
 - **一键部署** —— **Docker Compose** 双 profile：**Demo**（快速惊艳）与 **Prod**（**默认安全**：非 root、内网数据面、健康检查串联启动）。
 
 ## 预览图
 
-![ScreenShot_2026-04-12_161840_012](https://free.picui.cn/free/2026/04/12/69db5ea0d811e.png)
+![ScreenShot_2026-04-12_161840_012](https://free.picui.cn/free/2026/04/17/69e22009c54d1.png)
+
+![ScreenShot_2026-04-17_161956_277](https://free.picui.cn/free/2026/04/17/69e221b86ff96.png)
 
 ---
 
@@ -41,13 +43,13 @@
 
 ## 为何选择 Hermes-Agent UI
 
-### 高性能虚拟化（500+ 推理步）
+### 高性能虚拟化（自适应阈值）
 
 多数 Agent 界面死于细碎重渲染。本 UI 将 **推理 Trace** 视为 **流**，而非朴素列表：
 
 - **入站帧批量合并**，在绘制前吸收突发 WebSocket 流量。
 - **与 `requestAnimationFrame` 对齐的刷新**，高负载下仍保持主线程响应。
-- **窗口化渲染** 在 Trace 行数超过 **500** 时自动启用，**DOM 规模不随步数线性增长**。
+- **窗口化渲染** 在长 Trace 下自动启用（当前实现阈值约 **180 条合并帧**），**DOM 规模不随步数线性增长**。
 
 结果：模型持续思考时，界面仍可 **交互**。
 
@@ -80,7 +82,7 @@
 
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
-| **对话** — WebSocket 流式、回放、产物、HTML 沙箱 | **开发中** | 主路径，对齐上游 **hermes-agent** 工具契约。 |
+| **对话** — WebSocket 流式、回放、产物、HTML 沙箱 | **已交付** | 当前最稳定主路径，适用于本地与自托管场景；对齐上游 **hermes-agent** 工具契约。 |
 | **IndexedDB** 多会话 | **开发中** | 浏览器侧多会话历史；服务端回放仍按属主隔离。 |
 | **洞察** Hub | **开发中** | 提供 `overview`、`timeseries`、`tools/top`、`tools/{name}/latency`、`traces/{trace_id}`、`clarify` 分析；前端支持懒加载图表与 Trace 下钻。 |
 | **技能** Hub — 可视化目录、一键安装、已安装管理 | **开发中** | 与 API 端到端可用，支持卡片式安装与安装状态同步。 |
@@ -91,59 +93,18 @@
 
 ## 三分钟上手
 
-> **目标：** 从干净克隆到 **可对话**：健康检查通过、LLM 已配置，发送一条消息即可看到 **推理 Trace + Artifacts** 流式更新（镜像构建完成后约三分钟可完成）。
+> **推荐路径：** 优先使用**本地开发模式**（API + Web 双终端）。这是当前仓库主要维护与验证的工作流。
 
 ### 前置条件
 
-- 已安装 **Docker Desktop**（或 Docker Engine）与 **Docker Compose v2**
 - 已安装 **Git**
+- 已安装 **Python 3.11+**
+- 已安装 **Node.js 20+** 与 **pnpm**
 - 可用的 **OpenAI 兼容 API Key**（OpenAI、Azure OpenAI、通义兼容网关等）。API 容器读取 **`apps/api/.env`**；未配置真实密钥时，模型调用可能无法按预期工作。
 
-### 方案 A —— Docker Compose `demo` 配置（首次运行推荐）
+### 方案 A —— 本地开发（双终端，无 Docker，推荐）
 
-在**仓库根目录**执行：
-
-```bash
-git clone <repository-url>
-cd hermes-agent-ui
-
-# 1）Compose 与构建参数（镜像源、profile 等）
-cp .env.example.docker .env
-
-# 2）API 运行时 —— 真实 LLM 调用所必需（Compose 会挂载此文件）
-cp apps/api/.env.example apps/api/.env
-# 编辑 apps/api/.env：填写 OPENAI_API_KEY（若用通义等则设置 OPENAI_BASE_URL）
-# HERMES_PROVIDER / HERMES_MODEL 需与厂商一致。
-
-# 3）构建并启动（api-demo + web-demo；demo 下关闭鉴权）
-docker compose --profile demo up --build
-```
-
-待 **`hermes-api-demo`** 在 Compose 中显示为 **`healthy`** 后：
-
-1. **冒烟测试 API：** 浏览器打开 **`http://localhost:8000/health`**，应返回 `{"ok": true}`。
-2. **打开 UI：** **`http://localhost:3000`**，侧栏进入 **对话**（主能力）。
-3. 在输入框下点击 **Demo Templates** 任一模板，**或** 自行输入短提示并发送 —— **推理 Trace** 与 **Artifacts** 应实时更新。
-
-**端口（demo）**
-
-| 用途 | URL |
-| --- | --- |
-| Web UI | `http://localhost:3000` |
-| API 健康检查 | `http://localhost:8000/health` |
-| Agent WebSocket（浏览器连接） | `ws://localhost:8000/ws/agent` |
-
-**Hub 路由：** **洞察 / 技能 / 编排** 均可进入；编排侧为 **演示/ Mock 语义**，见 [功能就绪度](#功能就绪度已交付-vs-预览)。
-
-**排错（demo）**
-
-- **Web 一直不健康：** 等待 **`api-demo` 为 healthy**（`docker compose ps`）；查看 **`docker compose logs api-demo`**。
-- **对话无回复或一直转圈：** 确认已创建 **`apps/api/.env`** 且 **`OPENAI_API_KEY`** 有效、**`HERMES_MODEL`** 与厂商一致；查看 API 日志是否出现 LLM 401/404。
-- **端口占用：** 释放本机 **3000** / **8000** 或在 `docker-compose.yml` 中调整宿主机端口映射。
-
-### 方案 B —— 本地开发（双终端，无 Docker）
-
-适合频繁改 UI/API、避免反复构建镜像。
+适用于日常 UI/API 联调与快速迭代。
 
 **终端 1 —— API**
 
@@ -152,32 +113,73 @@ cd apps/api
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
+
 pip install -r requirements.txt
 cp .env.example .env
 # Windows PowerShell: Copy-Item .env.example .env
-# 编辑 .env：OPENAI_API_KEY、可选 OPENAI_BASE_URL、HERMES_MODEL 等
-# 本地快速联调可将 HERMES_UI_AUTH_ENABLED=0，与 demo 行为一致。
+# 本地快速联调可将 HERMES_UI_AUTH_ENABLED=0。
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **终端 2 —— Web（仓库根目录）**
 
 ```bash
+cp .env.example .env
+# Windows PowerShell: Copy-Item .env.example .env
 pnpm install
 pnpm dev:web
 ```
 
-确认 **`NEXT_PUBLIC_AGENT_WS_URL`**（及可选 **`NEXT_PUBLIC_AGENT_HTTP_URL`**）指向 API，默认分别为 `ws://localhost:8000/ws/agent` 与 `http://localhost:8000`。浏览器打开终端提示的地址（一般为 **`http://localhost:3000`**）。
+然后验证：
 
-### 方案 C —— 生产模式（默认安全）
+1. **API 健康检查：** 打开 **`http://localhost:8000/health`**，返回 `{"ok": true}`。
+2. **Web UI：** 打开 **`http://localhost:3000`**（或 Next.js 终端提示端口）。
+3. 输入短提示并发送，确认 **推理 Trace** 与 **Artifacts** 流式更新。
 
-> 面向 **DevOps / SRE**：**JWT 开启**，**Postgres + Redis** 位于 **Docker 内部网络**，**API/Web** 仅在你期望的位置暴露。
+请在页面 **Settings** 中配置模型 API/Base URL、模型名和 Key。
+
+按上面步骤复制这两个 `.env` 后，再完成这一步，就可以本地正常和 Hermes 对话，无需额外改环境变量。
+
+**端口（本地开发）**
+
+| 用途 | URL |
+| --- | --- |
+| Web UI | `http://localhost:3000` |
+| API 健康检查 | `http://localhost:8000/health` |
+| Agent WebSocket（浏览器连接） | `ws://localhost:8000/ws/agent` |
+
+### 方案 B —— Docker Compose `demo`（有限验证）
+
+> 该路径用于便捷体验，但当前稳定性验证以“方案 A 本地开发模式”为主。
+
+在仓库根目录执行：
+
+```bash
+git clone <repository-url>
+cd hermes-agent-ui
+cp .env.example.docker .env
+cp apps/api/.env.example apps/api/.env
+# 编辑 apps/api/.env：填写 OPENAI_API_KEY 与 provider/model
+docker compose --profile demo up --build
+```
+
+待 `api-demo` healthy 后访问 `http://localhost:3000`。
+
+### 方案 C —— 自托管加固模式（安全基线，非主验证路径）
+
+> 适用于需要更强安全控制的自托管场景；请在你的环境中充分验证后再用于长期运行。
 
 ```bash
 cp .env.example.docker .env
 # 编辑 .env：COMPOSE_PROFILES=prod，填写真实密钥、NEXT_PUBLIC_AGENT_AUTH_TOKEN、OPENAI_API_KEY 等
 docker compose --profile prod up --build
 ```
+
+**排错（通用）**
+
+- **Web 一直不健康：** 等待 **`api-demo` 为 healthy**（`docker compose ps`）；查看 **`docker compose logs api-demo`**。
+- **对话无回复或一直转圈：** 确认已创建 **`apps/api/.env`** 且 **`OPENAI_API_KEY`** 有效、**`HERMES_MODEL`** 与厂商一致；查看 API 日志是否出现 LLM 401/404。
+- **端口占用：** 释放本机 **3000** / **8000** 或在 `docker-compose.yml` 中调整宿主机端口映射。
 
 **Prod 最低检查项**
 
