@@ -326,16 +326,15 @@ export function useAgent(wsUrl: string, options?: UseAgentOptions) {
     (choice: string, userBubbleText: string) => {
       const c = choice.trim();
       if (!c) return;
-      const bubble = userBubbleText.trim() || c;
-      const history = buildHistoryFromTurns(turnsRef.current, HISTORY_TURNS);
       const cfg = getRuntimeConfig();
-      const pendingId = `${PENDING_TURN_PREFIX}${crypto.randomUUID()}`;
-      setTurns((prev) => [...prev, { turn_id: pendingId, user_text: bubble, frames: [] }]);
+      // IMPORTANT: clarify_pick resolves the currently running turn.
+      // Creating a new pending user turn here causes later frames (todo/clarify/result)
+      // to bind to stale turns and makes UI cards appear at wrong positions.
       const payload = JSON.stringify({
         session_id: sessionIdRef.current,
         auth_token: AUTH_TOKEN,
         message: "",
-        history,
+        history: [],
         resume_from_seq: null,
         clarify_pick: c,
         model_base_url: cfg.modelBaseUrl,

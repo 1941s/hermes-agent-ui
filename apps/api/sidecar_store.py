@@ -79,6 +79,12 @@ def init_sidecar_tables(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS optimization_runtime_policies (
+            user_id TEXT PRIMARY KEY,
+            rules_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS task_graph_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
@@ -488,6 +494,214 @@ def list_optimization_events(user_id: str, limit: int = 50) -> list[dict[str, An
             }
         )
     return out
+
+
+_runtime_policy_cache: dict[str, list[str]] = {}
+
+
+def _normalize_rules_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def get_runtime_policy_rules(user_id: str) -> list[str]:
+    cached = _runtime_policy_cache.get(user_id)
+    if cached is not None:
+        return list(cached)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT rules_json FROM optimization_runtime_policies WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    if not row:
+        _runtime_policy_cache[user_id] = []
+        return []
+    try:
+        rules = _normalize_rules_list(json.loads(str(row["rules_json"])))
+    except Exception:
+        rules = []
+    _runtime_policy_cache[user_id] = list(rules)
+    return rules
+
+
+def set_runtime_policy_rules(user_id: str, rules: list[str]) -> list[str]:
+    normalized = _normalize_rules_list(rules)
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO optimization_runtime_policies(user_id, rules_json, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(user_id) DO UPDATE SET
+              rules_json = excluded.rules_json,
+              updated_at = datetime('now')
+            """,
+            (user_id, json.dumps(normalized, ensure_ascii=False)),
+        )
+    _runtime_policy_cache[user_id] = list(normalized)
+    return normalized
+
+
+def _recent_failed_tools(user_id: str, days: int = 7) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT tool_name, COUNT(*) AS failures, COALESCE(AVG(latency_ms), 0) AS avg_latency_ms
+            FROM obs_tool_calls
+            WHERE user_id = ?
+              AND started_at >= datetime('now', ?)
+              AND success = 0
+            GROUP BY tool_name
+            ORDER BY failures DESC, avg_latency_ms DESC
+            LIMIT 10
+            """,
+            (user_id, f"-{max(1, days)} days"),
+        ).fetchall()
+    return [
+        {"tool_name": str(r["tool_name"]), "failures": int(r["failures"]), "avg_latency_ms": int(float(r["avg_latency_ms"]))}
+        for r in rows
+    ]
+
+
+def _recent_failure_messages(user_id: str, limit: int = 300) -> list[str]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT frame_json
+            FROM obs_trace_events
+            WHERE user_id = ?
+              AND created_at >= datetime('now', '-7 days')
+              AND frame_type = 'ARTIFACT'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, max(50, min(limit, 1000))),
+        ).fetchall()
+    out: list[str] = []
+    for row in rows:
+        try:
+            frame = json.loads(str(row["frame_json"]))
+            payload = frame.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            content = payload.get("content")
+            parsed = content
+            if isinstance(content, str):
+                try:
+                    parsed = json.loads(content)
+                except Exception:
+                    parsed = None
+            if isinstance(parsed, dict) and parsed.get("success") is False:
+                err = str(parsed.get("error") or "").strip()
+                if err:
+                    out.append(err)
+        except Exception:
+            continue
+    return out
+
+
+def derive_optimization_candidate(user_id: str, platform: str = "windows") -> dict[str, Any]:
+    platform_norm = (platform or "windows").strip().lower()
+    failed_tools = _recent_failed_tools(user_id, days=7)
+    failures_total = sum(int(item["failures"]) for item in failed_tools)
+    failure_msgs = _recent_failure_messages(user_id, limit=300)
+    current_rules = set(get_runtime_policy_rules(user_id))
+
+    base_common_rules = [
+        "Prefer tool outputs over model assumptions when structured tool data is available.",
+        "For code generation tasks, keep temperature low and prioritize deterministic edits.",
+    ]
+    base_windows_rules = [
+        "Use PowerShell-compatible commands by default; avoid bash-only syntax unless explicitly requested.",
+        "When invoking shell commands on Windows, always quote paths and prefer absolute paths.",
+    ]
+
+    dynamic_rules: list[str] = []
+    low_msgs = [m.lower() for m in failure_msgs]
+    if any("err_file_not_found" in m for m in low_msgs):
+        dynamic_rules.append(
+            "Before browser navigation, verify file existence with workspace-aware paths; if file:// fails, fallback to localhost static server in the actual project directory."
+        )
+    if any("gbk" in m and "decode" in m for m in low_msgs):
+        dynamic_rules.append(
+            "On Windows/local browser tooling, enforce UTF-8 output and avoid locale-dependent decoding paths for snapshot/vision steps."
+        )
+    if any("timeout" in m for m in low_msgs):
+        dynamic_rules.append("When tools timeout repeatedly, reduce step granularity and add explicit retry limits with fallback actions.")
+
+    top_tool = failed_tools[0]["tool_name"] if failed_tools else ""
+    if top_tool:
+        dynamic_rules.append(
+            f"Apply a guardrail for high-failure tool `{top_tool}`: pre-check required inputs and provide one deterministic fallback path."
+        )
+    if failures_total >= 3:
+        dynamic_rules.append("Before mutating files, read current file state first and validate context to reduce retries.")
+
+    added: list[str] = []
+    for rule in (base_common_rules + (base_windows_rules if platform_norm == "windows" else []) + dynamic_rules):
+        text = rule.strip()
+        if text and text not in current_rules and text not in added:
+            added.append(text)
+
+    reasons: list[str] = [f"platform={platform_norm}", f"7d_failed_tool_calls={failures_total}"]
+    if top_tool:
+        reasons.append(f"top_failed_tool={top_tool}")
+    if failure_msgs:
+        reasons.append(f"recent_failure_signals={min(len(failure_msgs), 300)}")
+
+    return {
+        "kind": "rule_replace",
+        "removed": [],
+        "added": _normalize_rules_list(added),
+        "rationale": "Derived from observed failures and platform context: " + ", ".join(reasons) + ".",
+        "session_id": "insights-auto-opt",
+    }
+
+
+def apply_optimization_changes(
+    user_id: str,
+    *,
+    removed: list[str],
+    added: list[str],
+    rationale: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    normalized_removed = _normalize_rules_list(removed)
+    normalized_added = _normalize_rules_list(added)
+    if not normalized_removed and not normalized_added:
+        # No-op apply should not pollute optimization log.
+        return {"rules": get_runtime_policy_rules(user_id), "total": len(get_runtime_policy_rules(user_id)), "no_op": True}
+    current = get_runtime_policy_rules(user_id)
+    removed_set = set(normalized_removed)
+    merged = [rule for rule in current if rule not in removed_set]
+    for rule in normalized_added:
+        if rule not in merged:
+            merged.append(rule)
+    updated = set_runtime_policy_rules(user_id, merged)
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO optimization_events(user_id, session_id, kind, removed_json, added_json, rationale)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                session_id,
+                "rule_replace",
+                json.dumps(normalized_removed, ensure_ascii=False),
+                json.dumps(normalized_added, ensure_ascii=False),
+                rationale or "Applied to runtime optimization policy.",
+            ),
+        )
+    return {"rules": updated, "total": len(updated)}
 
 
 def metrics_summary(user_id: str, days: int = 14) -> dict[str, Any]:

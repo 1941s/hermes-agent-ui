@@ -6,7 +6,9 @@ import {
   Activity,
   ArrowDown,
   ArrowUp,
+  CheckCircle2,
   Check,
+  Circle,
   LayoutGrid,
   MessageSquare,
   PanelLeft,
@@ -40,6 +42,110 @@ const DiagnosticsDrawer = dynamic(
 
 /** ChatGPT-style: pixels from bottom to treat as "following" the stream. */
 const CHAT_STICKY_BOTTOM_PX = 80;
+
+type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
+type TodoItem = {
+  id: string;
+  content: string;
+  status: TodoStatus;
+};
+
+type TodoSummary = {
+  total?: number;
+  pending?: number;
+  in_progress?: number;
+  completed?: number;
+  cancelled?: number;
+};
+
+type TodoArtifact = {
+  artifactId: string;
+  todos: TodoItem[];
+  summary: TodoSummary | null;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value != null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function parseTodoArtifact(framePayload: Record<string, unknown>): TodoArtifact | null {
+  if (String(framePayload.source_tool ?? "") !== "todo" || String(framePayload.artifact_type ?? "") !== "json") {
+    return null;
+  }
+  const rawContent = framePayload.content;
+  let parsed: unknown = rawContent;
+  if (typeof rawContent === "string") {
+    try {
+      parsed = JSON.parse(rawContent);
+    } catch {
+      return null;
+    }
+  }
+  const parsedRecord = asRecord(parsed);
+  if (!parsedRecord) return null;
+  const rawTodos = Array.isArray(parsedRecord.todos) ? parsedRecord.todos : [];
+  const todos: TodoItem[] = rawTodos
+    .map((item) => {
+      const record = asRecord(item);
+      if (!record) return null;
+      const id = String(record.id ?? "");
+      const content = String(record.content ?? "");
+      const status = String(record.status ?? "") as TodoStatus;
+      if (!id || !content || !["pending", "in_progress", "completed", "cancelled"].includes(status)) {
+        return null;
+      }
+      return { id, content, status };
+    })
+    .filter((item): item is TodoItem => item != null);
+  if (todos.length === 0) return null;
+
+  const summaryRecord = asRecord(parsedRecord.summary);
+  const summary: TodoSummary | null = summaryRecord
+    ? {
+        total: typeof summaryRecord.total === "number" ? summaryRecord.total : undefined,
+        pending: typeof summaryRecord.pending === "number" ? summaryRecord.pending : undefined,
+        in_progress: typeof summaryRecord.in_progress === "number" ? summaryRecord.in_progress : undefined,
+        completed: typeof summaryRecord.completed === "number" ? summaryRecord.completed : undefined,
+        cancelled: typeof summaryRecord.cancelled === "number" ? summaryRecord.cancelled : undefined,
+      }
+    : null;
+
+  return {
+    artifactId: String(framePayload.artifact_id ?? ""),
+    todos,
+    summary,
+  };
+}
+
+function getTodoStatusMeta(status: TodoStatus, locale: "zh" | "en") {
+  if (status === "completed") {
+    return {
+      icon: <CheckCircle2 className="h-4 w-4 text-emerald-400" />,
+      label: locale === "zh" ? "已完成" : "Completed",
+      badgeClass: "border-emerald-500/35 bg-emerald-500/15 text-emerald-200",
+    };
+  }
+  if (status === "in_progress") {
+    return {
+      icon: <Circle className="h-4 w-4 text-sky-400" />,
+      label: locale === "zh" ? "进行中" : "In Progress",
+      badgeClass: "border-sky-500/35 bg-sky-500/15 text-sky-200",
+    };
+  }
+  if (status === "cancelled") {
+    return {
+      icon: <Circle className="h-4 w-4 text-zinc-500" />,
+      label: locale === "zh" ? "已取消" : "Cancelled",
+      badgeClass: "border-zinc-600/40 bg-zinc-700/20 text-zinc-300",
+    };
+  }
+  return {
+    icon: <Circle className="h-4 w-4 text-zinc-400" />,
+    label: locale === "zh" ? "待处理" : "Pending",
+    badgeClass: "border-zinc-500/35 bg-zinc-500/10 text-zinc-300",
+  };
+}
 
 export function ChatInterface() {
   const [message, setMessage] = useState("");
@@ -360,6 +466,9 @@ export function ChatInterface() {
 
   const onClarifySelect = useCallback(
     (turnId: string, prompt: ClarifyPrompt, choice: string) => {
+      // Guard against duplicate clarify submissions in same turn.
+      const alreadyAnsweredThisTurn = Object.keys(clarifyAnswers).some((k) => k.startsWith(`${turnId}:`));
+      if (alreadyAnsweredThisTurn) return;
       const key = clarifySessionKey(turnId, prompt);
       stickToBottomRef.current = true;
       setClarifyAnswers((prev) => ({ ...prev, [key]: choice }));
@@ -367,7 +476,7 @@ export function ChatInterface() {
       requestAnimationFrame(() => scrollChatToBottom("smooth"));
       textareaRef.current?.focus();
     },
-    [sendClarifyPick, scrollChatToBottom],
+    [clarifyAnswers, sendClarifyPick, scrollChatToBottom],
   );
 
   const statusLabel =
@@ -744,10 +853,16 @@ export function ChatInterface() {
                     {turns.map((turn, ti) => {
                       const assistantText = aggregateAssistantFromFrames(turn.frames);
                       const hasAssistantText = assistantText.trim().length > 0;
+                      const todoArtifacts = turn.frames
+                        .filter((frame) => frame.type === "ARTIFACT")
+                        .map((frame) => parseTodoArtifact(frame.payload))
+                        .filter((item): item is TodoArtifact => item != null);
                       const isLastTurn = ti === turns.length - 1;
                       const clarify = extractClarifyFromFrames(turn.frames);
                       const clarifyKey = clarify ? clarifySessionKey(turn.turn_id, clarify) : null;
                       const answeredChoice = clarifyKey ? clarifyAnswers[clarifyKey] : undefined;
+                      const answeredInTurnEntry = Object.entries(clarifyAnswers).find(([k]) => k.startsWith(`${turn.turn_id}:`));
+                      const answeredChoiceInTurn = answeredInTurnEntry?.[1];
 
                       const showLiveIndicator =
                         isLastTurn &&
@@ -755,7 +870,7 @@ export function ChatInterface() {
                         (status === "thinking" ||
                           (status === "responding" && isAssistantReplyInFlight(turn.frames)));
 
-                      const showAssistantColumn = Boolean(clarify) || hasAssistantText || showLiveIndicator;
+                      const showAssistantColumn = Boolean(clarify) || hasAssistantText || showLiveIndicator || todoArtifacts.length > 0;
 
                       const showBubble = hasAssistantText || showLiveIndicator;
                       const thinkingOnlyInBubble = showLiveIndicator && !hasAssistantText;
@@ -782,7 +897,7 @@ export function ChatInterface() {
                                 {clarify ? (
                                   <ClarifyChoicePanel
                                     prompt={clarify}
-                                    answeredChoice={answeredChoice ?? null}
+                                    answeredChoice={answeredChoice ?? answeredChoiceInTurn ?? null}
                                     disabled={!connected}
                                     onSelect={(choice) => onClarifySelect(turn.turn_id, clarify, choice)}
                                     labels={{
@@ -792,6 +907,60 @@ export function ChatInterface() {
                                     }}
                                   />
                                 ) : null}
+                                {todoArtifacts.map((artifact, idx) => (
+                                  <div
+                                    key={`${turn.turn_id}-todo-${artifact.artifactId || idx}`}
+                                    className="max-w-[min(100%,92%)] rounded-2xl rounded-bl-md border border-white/[0.08] bg-zinc-900/45 px-4 py-3 shadow-[0_1px_0_rgba(0,0,0,0.35)]"
+                                  >
+                                    {(() => {
+                                      const completed = artifact.summary?.completed ?? artifact.todos.filter((t) => t.status === "completed").length;
+                                      const total = artifact.summary?.total ?? artifact.todos.length;
+                                      const allDone = total > 0 && completed >= total;
+                                      const title = locale === "zh" ? "任务进度" : "Todo Progress";
+
+                                      const todoList = (
+                                        <div className="space-y-2">
+                                          {artifact.todos.map((todo) => {
+                                            const status = getTodoStatusMeta(todo.status, locale);
+                                            return (
+                                              <div key={todo.id} className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                                                <span className="shrink-0">{status.icon}</span>
+                                                <div className="min-w-0 flex-1 text-[13px] text-zinc-200">{todo.content}</div>
+                                                <span className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] ${status.badgeClass}`}>{status.label}</span>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      );
+
+                                      if (!allDone) {
+                                        return (
+                                          <>
+                                            <div className="mb-3 flex items-center justify-between gap-2">
+                                              <div className="text-[13px] font-medium text-zinc-100">{title}</div>
+                                              <div className="text-[11px] text-zinc-400">
+                                                {completed}/{total}
+                                              </div>
+                                            </div>
+                                            {todoList}
+                                          </>
+                                        );
+                                      }
+
+                                      return (
+                                        <details className="group" open={false}>
+                                          <summary className="mb-1 flex cursor-pointer list-none items-center justify-between gap-2 text-[13px] font-medium text-zinc-100 marker:content-none">
+                                            <span>{title}</span>
+                                            <span className="text-[11px] text-emerald-300">
+                                              {locale === "zh" ? "已完成" : "Completed"} · {completed}/{total}
+                                            </span>
+                                          </summary>
+                                          <div className="mt-2">{todoList}</div>
+                                        </details>
+                                      );
+                                    })()}
+                                  </div>
+                                ))}
                                 {showBubble ? (
                                   <div
                                     className={`hermes-assistant-bubble min-w-0 max-w-[min(100%,92%)] rounded-2xl rounded-bl-md border border-[var(--border-hairline)] px-4 py-3 text-left shadow-[0_1px_0_rgba(0,0,0,0.35)] backdrop-blur-[2px] ${

@@ -826,6 +826,28 @@ def _inject_enabled_skills_context(request: WsRequest, user_id: str) -> WsReques
     return request.model_copy(update={"system_prompt": merged})
 
 
+def _inject_runtime_optimization_policy(request: WsRequest, user_id: str) -> WsRequest:
+    """Attach persisted optimization rules to system prompt (small, deterministic)."""
+    try:
+        try:
+            from .sidecar_store import get_runtime_policy_rules
+        except ImportError:
+            from sidecar_store import get_runtime_policy_rules  # type: ignore
+        rules = get_runtime_policy_rules(user_id)
+    except Exception:
+        LOGGER.debug("get_runtime_policy_rules failed", exc_info=True)
+        return request
+    if not rules:
+        return request
+    addon = "\n\n[RUNTIME_OPTIMIZATION_RULES]\n" + "\n".join(f"- {rule}" for rule in rules) + "\n[/RUNTIME_OPTIMIZATION_RULES]\n"
+    merged = (request.system_prompt or "").strip()
+    if merged:
+        merged = f"{merged}\n{addon}"
+    else:
+        merged = addon.strip()
+    return request.model_copy(update={"system_prompt": merged})
+
+
 def _bind_or_verify_session_owner(session_id: str, user_id: str) -> bool:
     if not SETTINGS.auth_enabled:
         return True
@@ -1004,6 +1026,80 @@ async def ws_agent(websocket: WebSocket) -> None:
         )
         await websocket.send_text(json.dumps(frame.model_dump(mode="json")))
 
+    def _extract_todo_state_from_artifact(frame: dict[str, Any]) -> dict[str, Any] | None:
+        if str(frame.get("type") or "") != "ARTIFACT":
+            return None
+        payload = frame.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("source_tool") or "") != "todo" or str(payload.get("artifact_type") or "") != "json":
+            return None
+        content_raw = payload.get("content")
+        parsed: Any = None
+        if isinstance(content_raw, str):
+            try:
+                parsed = json.loads(content_raw)
+            except Exception:
+                return None
+        elif isinstance(content_raw, dict):
+            parsed = content_raw
+        if not isinstance(parsed, dict):
+            return None
+        todos = parsed.get("todos")
+        if not isinstance(todos, list):
+            return None
+        return {"payload": payload, "data": parsed}
+
+    def _build_cancelled_todo_artifact_frame(
+        session_id: str,
+        trace_id: str,
+        seq: int,
+        todo_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        parsed = todo_state.get("data")
+        payload = todo_state.get("payload")
+        if not isinstance(parsed, dict) or not isinstance(payload, dict):
+            return None
+        raw_todos = parsed.get("todos")
+        if not isinstance(raw_todos, list):
+            return None
+
+        mutated = False
+        next_todos: list[dict[str, Any]] = []
+        for item in raw_todos:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "")
+            next_item = dict(item)
+            if status in {"pending", "in_progress"}:
+                next_item["status"] = "cancelled"
+                mutated = True
+            next_todos.append(next_item)
+        if not mutated:
+            return None
+
+        summary = {
+            "total": len(next_todos),
+            "pending": sum(1 for t in next_todos if str(t.get("status")) == "pending"),
+            "in_progress": sum(1 for t in next_todos if str(t.get("status")) == "in_progress"),
+            "completed": sum(1 for t in next_todos if str(t.get("status")) == "completed"),
+            "cancelled": sum(1 for t in next_todos if str(t.get("status")) == "cancelled"),
+        }
+        next_content = {"todos": next_todos, "summary": summary}
+
+        return ArtifactFrame(
+            session_id=session_id,
+            trace_id=trace_id,
+            seq=seq,
+            payload=ArtifactPayload(
+                artifact_id=str(uuid4()),
+                source_tool="todo",
+                artifact_type="json",
+                mime="application/json",
+                content=json.dumps(next_content, ensure_ascii=False),
+            ),
+        ).model_dump(mode="json")
+
     async def drain_agent_stream_after_disconnect(
         req: WsRequest,
         user_id: str,
@@ -1017,6 +1113,7 @@ async def ws_agent(websocket: WebSocket) -> None:
         We only persist frames (for replay), never send on websocket.
         """
         tool_started_at: dict[str, float] = {}
+        latest_todo_state: dict[str, Any] | None = None
         counters = {"frames": 0, "response_chunks": 0, "errors": 0, "tool_calls": 0}
         while True:
             try:
@@ -1026,6 +1123,11 @@ async def ws_agent(websocket: WebSocket) -> None:
             frame = _to_ws_frame(req.session_id, trace_id, seq, event)
             frame_type = str(frame.get("type") or "")
             payload = frame.get("payload")
+            if frame_type == "ARTIFACT":
+                maybe_todo = _extract_todo_state_from_artifact(frame)
+                if maybe_todo is not None:
+                    latest_todo_state = maybe_todo
+            emit_cancelled_after = frame_type == "RESPONSE" and isinstance(payload, dict) and bool(payload.get("final")) and latest_todo_state is not None
             counters["frames"] += 1
             if frame_type == "RESPONSE":
                 counters["response_chunks"] += 1
@@ -1066,12 +1168,19 @@ async def ws_agent(websocket: WebSocket) -> None:
                     )
             _persist_frame(req.session_id, frame, user_id=user_id, trace_id=trace_id)
             seq += 1
+            if emit_cancelled_after and latest_todo_state is not None:
+                cancelled_frame = _build_cancelled_todo_artifact_frame(req.session_id, trace_id, seq, latest_todo_state)
+                if cancelled_frame is not None:
+                    _persist_frame(req.session_id, cancelled_frame, user_id=user_id, trace_id=trace_id)
+                    seq += 1
+                    counters["frames"] += 1
             ev_task = asyncio.create_task(agen.__anext__())
         return seq, counters
 
     async def consume_agent_stream(req: WsRequest, user_id: str, trace_id: str, seq: int) -> tuple[int, dict[str, int]]:
         """Stream `service.run` while still dequeuing `clarify_pick` / control messages from `incoming`."""
         tool_started_at: dict[str, float] = {}
+        latest_todo_state: dict[str, Any] | None = None
         counters = {"frames": 0, "response_chunks": 0, "errors": 0, "tool_calls": 0}
         agen = service.run(req, user_id=user_id).__aiter__()
         ev_task = asyncio.create_task(agen.__anext__())
@@ -1089,6 +1198,11 @@ async def ws_agent(websocket: WebSocket) -> None:
                 frame = _to_ws_frame(req.session_id, trace_id, seq, event)
                 frame_type = str(frame.get("type") or "")
                 payload = frame.get("payload")
+                if frame_type == "ARTIFACT":
+                    maybe_todo = _extract_todo_state_from_artifact(frame)
+                    if maybe_todo is not None:
+                        latest_todo_state = maybe_todo
+                emit_cancelled_after = frame_type == "RESPONSE" and isinstance(payload, dict) and bool(payload.get("final")) and latest_todo_state is not None
                 counters["frames"] += 1
                 if frame_type == "RESPONSE":
                     counters["response_chunks"] += 1
@@ -1153,6 +1267,12 @@ async def ws_agent(websocket: WebSocket) -> None:
                         )
                 seq += 1
                 await send_and_store(req.session_id, frame, user_id=user_id, trace_id=trace_id)
+                if emit_cancelled_after and latest_todo_state is not None:
+                    cancelled_frame = _build_cancelled_todo_artifact_frame(req.session_id, trace_id, seq, latest_todo_state)
+                    if cancelled_frame is not None:
+                        counters["frames"] += 1
+                        await send_and_store(req.session_id, cancelled_frame, user_id=user_id, trace_id=trace_id)
+                        seq += 1
                 ev_task = asyncio.create_task(agen.__anext__())
             else:
                 raw_inc = msg_task.result()
@@ -1392,6 +1512,7 @@ async def ws_agent(websocket: WebSocket) -> None:
                     )
                     continue
             req = _inject_enabled_skills_context(req, user_id)
+            req = _inject_runtime_optimization_policy(req, user_id)
 
             if heartbeat_task is not None and not heartbeat_task.done():
                 heartbeat_task.cancel()
