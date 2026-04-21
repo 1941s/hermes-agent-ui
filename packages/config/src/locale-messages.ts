@@ -64,6 +64,12 @@ export type Messages = {
     clarifyPickOne: string;
     clarifyFallbackHint: string;
     clarifyYourChoice: string;
+    /** Reasoning trace: group frames under the user turn that triggered them (`{n}` = 1-based round index) */
+    reasoningTraceRound: string;
+    reasoningTraceLatest: string;
+    reasoningTraceTriggeredBy: string;
+    reasoningTraceNoUserMatch: string;
+    reasoningTraceEmpty: string;
   };
   states: {
     thinking: string;
@@ -296,6 +302,11 @@ export const messages: Record<Locale, Messages> = {
       clarifyFallbackHint:
         "工具返回异常时仍可在下方点选；你的选择会作为下一条消息发给模型以继续对话。",
       clarifyYourChoice: "已选择：",
+      reasoningTraceRound: "第 {n} 轮",
+      reasoningTraceLatest: "当前",
+      reasoningTraceTriggeredBy: "由此用户消息触发的推理",
+      reasoningTraceNoUserMatch: "（未匹配到会话中的用户原文）",
+      reasoningTraceEmpty: "暂无推理帧（思考、工具调用等会显示在这里）",
     },
     states: {
       thinking: "推理中",
@@ -544,6 +555,11 @@ export const messages: Record<Locale, Messages> = {
       clarifyFallbackHint:
         "If the tool returned an error, you can still choose below; your pick is sent as the next message.",
       clarifyYourChoice: "You selected:",
+      reasoningTraceRound: "Turn {n}",
+      reasoningTraceLatest: "Latest",
+      reasoningTraceTriggeredBy: "Reasoning triggered by this message",
+      reasoningTraceNoUserMatch: "(No user message matched for this trace)",
+      reasoningTraceEmpty: "No reasoning frames yet (thoughts, tools, etc. appear here)",
     },
     states: {
       thinking: "Thinking",

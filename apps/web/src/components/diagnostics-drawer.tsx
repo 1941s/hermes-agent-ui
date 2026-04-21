@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { useTranslations } from "@/hooks/use-translations";
+import { apiGet } from "@/lib/agent-api";
 
 type ReplayStats = {
   runtime_counters?: {
@@ -72,13 +73,12 @@ export function DiagnosticsDrawer() {
 
   const { data, isFetching } = useQuery({
     queryKey: ["replay-stats"],
-    queryFn: async (): Promise<ReplayStats> => {
-      const res = await fetch("http://localhost:8000/replay/stats");
-      if (!res.ok) throw new Error("Failed to fetch replay stats");
-      return res.json();
-    },
+    queryFn: () => apiGet<ReplayStats>("/replay/stats"),
     refetchInterval: 5000,
   });
+
+  const topSessions = data?.top_sessions ?? [];
+  const showFpsTiles = process.env.NODE_ENV === "development";
 
   return (
     <div className="rounded-lg border border-[var(--border-hairline)] bg-black/20 px-3 py-2.5 text-[11px] text-zinc-400">
@@ -93,26 +93,32 @@ export function DiagnosticsDrawer() {
         <span className="text-right text-zinc-300">{data?.runtime_counters?.replay_misses ?? 0}</span>
         <span>{t.labels.artifactTruncated}</span>
         <span className="text-right text-zinc-300">{data?.runtime_counters?.artifact_truncated ?? 0}</span>
-        <span>{t.labels.fps}</span>
-        <span className="text-right text-zinc-300">{fps}</span>
-        <span>{t.labels.droppedFrames}</span>
-        <span className="text-right text-zinc-300">{droppedFrames}</span>
-        <span>{t.labels.fpsAvg60}</span>
-        <span className="text-right text-zinc-300">{fpsAvg60}</span>
-        <span>{t.labels.droppedAvg60}</span>
-        <span className="text-right text-zinc-300">{dropAvg60}</span>
+        {showFpsTiles ? (
+          <>
+            <span>{t.labels.fps}</span>
+            <span className="text-right text-zinc-300">{fps}</span>
+            <span>{t.labels.droppedFrames}</span>
+            <span className="text-right text-zinc-300">{droppedFrames}</span>
+            <span>{t.labels.fpsAvg60}</span>
+            <span className="text-right text-zinc-300">{fpsAvg60}</span>
+            <span>{t.labels.droppedAvg60}</span>
+            <span className="text-right text-zinc-300">{dropAvg60}</span>
+          </>
+        ) : null}
         <span>{t.labels.benchmarkSessions}</span>
         <span className="text-right text-zinc-300">{data?.runtime_counters?.benchmark_sessions ?? 0}</span>
         <span>{t.labels.totalFrames}</span>
         <span className="text-right text-zinc-300">{data?.total_frames ?? 0}</span>
       </div>
-      <div className="mt-2 max-h-24 overflow-auto rounded-lg border border-white/[0.06] p-1.5 text-[10px] font-mono">
-        {(data?.top_sessions ?? []).map((s) => (
-          <div key={s.session_id} className="truncate text-zinc-500">
-            {s.session_id} · {s.frame_count}
-          </div>
-        ))}
-      </div>
+      {topSessions.length > 0 ? (
+        <div className="mt-2 max-h-24 overflow-auto rounded-lg border border-white/[0.06] p-1.5 text-[10px] font-mono">
+          {topSessions.map((s) => (
+            <div key={s.session_id} className="truncate text-zinc-500">
+              {s.session_id} · {s.frame_count}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

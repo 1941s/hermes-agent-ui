@@ -86,6 +86,18 @@ const components: Components = {
       {children}
     </a>
   ),
+  img: ({ src, alt, ...rest }) => (
+    // eslint-disable-next-line @next/next/no-img-element -- 对话区外链由模型/用户内容决定，运行时 URL
+    <img
+      src={typeof src === "string" ? src : undefined}
+      alt={typeof alt === "string" ? alt : ""}
+      className="my-3 block max-h-[min(28rem,72vh)] w-auto max-w-full rounded-lg border border-[var(--border-hairline)] bg-zinc-950/40 object-contain shadow-sm"
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      {...rest}
+    />
+  ),
   h1: ({ children, ...rest }) => (
     <h1 className="mb-3 mt-6 border-b border-[var(--border-hairline)] pb-2 text-lg font-semibold tracking-tight text-zinc-100 first:mt-0" {...rest}>
       {children}

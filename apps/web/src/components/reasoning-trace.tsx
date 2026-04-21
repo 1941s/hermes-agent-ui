@@ -2,19 +2,21 @@
 
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowDown, ChevronDown, Wrench } from "lucide-react";
+import { ArrowDown, ChevronDown, MessageSquareText, Sparkles, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useTranslations } from "@/hooks/use-translations";
-import type { AgentFrame } from "@/types";
+import type { AgentFrame, ChatTurn } from "@/types";
 
 type Props =
   | {
       frames: AgentFrame[];
+      turns?: ChatTurn[];
       variant: "embedded";
     }
   | {
       frames: AgentFrame[];
+      turns?: ChatTurn[];
       variant?: "collapsible";
       open: boolean;
       onOpenChange: (open: boolean) => void;
@@ -30,6 +32,29 @@ const VIRTUAL_FADE_IN_S = 0.12;
 
 function getFrameKey(frame: AgentFrame): string {
   return `${frame.trace_id}-${frame.seq}`;
+}
+
+function groupDisplayFramesByTraceId(frames: AgentFrame[]): { traceId: string; frames: AgentFrame[] }[] {
+  const map = new Map<string, AgentFrame[]>();
+  const order: string[] = [];
+  for (const f of frames) {
+    let bucket = map.get(f.trace_id);
+    if (!bucket) {
+      bucket = [];
+      map.set(f.trace_id, bucket);
+      order.push(f.trace_id);
+    }
+    bucket.push(f);
+  }
+  return order.map((traceId) => ({ traceId, frames: map.get(traceId)! }));
+}
+
+function userTextForTrace(traceId: string, turns: ChatTurn[] | undefined): string | null {
+  if (!turns?.length) return null;
+  const hit = turns.find((t) => t.turn_id === traceId);
+  if (!hit) return null;
+  const trimmed = hit.user_text.trim();
+  return trimmed.length > 0 ? hit.user_text : null;
 }
 
 function mergeStreamingFrames(frames: AgentFrame[]): AgentFrame[] {
@@ -72,6 +97,86 @@ function mergeStreamingFrames(frames: AgentFrame[]): AgentFrame[] {
     merged.push(frame);
   }
   return merged;
+}
+
+function TraceTurnAnchor({
+  traceId,
+  roundLabel,
+  userText,
+  noUserLabel,
+  triggeredBy,
+  latestLabel,
+  isLatest,
+  children,
+}: {
+  traceId: string;
+  roundLabel: string;
+  userText: string | null;
+  noUserLabel: string;
+  triggeredBy: string;
+  latestLabel: string;
+  isLatest: boolean;
+  children: React.ReactNode;
+}) {
+  const traceTitle = traceId.length > 28 ? `${traceId.slice(0, 14)}…${traceId.slice(-10)}` : traceId;
+  return (
+    <section
+      className="mb-4 rounded-2xl border border-[var(--border-hairline)] bg-[linear-gradient(145deg,rgba(255,255,255,0.05)_0%,rgba(255,255,255,0.01)_45%,transparent_100%)] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] last:mb-1"
+      aria-label={triggeredBy}
+    >
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded-full border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-200/95">
+          <Sparkles className="h-3 w-3 shrink-0 opacity-80" aria-hidden />
+          {roundLabel}
+        </span>
+        {isLatest ? (
+          <span className="rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-200/95">
+            {latestLabel}
+          </span>
+        ) : null}
+        <span className="ml-auto max-w-[min(100%,11rem)] truncate font-mono text-[10px] text-zinc-600" title={traceId}>
+          {traceTitle}
+        </span>
+      </div>
+      <p className="mb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500">{triggeredBy}</p>
+      <div className="relative overflow-hidden rounded-xl border border-white/[0.07] bg-black/30">
+        <div
+          className="pointer-events-none absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-sky-400 via-cyan-400/70 to-violet-500/90"
+          aria-hidden
+        />
+        <div className="flex gap-2.5 py-2.5 pl-3.5 pr-3">
+          <MessageSquareText className="mt-0.5 h-4 w-4 shrink-0 text-zinc-500" aria-hidden />
+          <p className="min-w-0 flex-1 text-[13px] leading-relaxed text-zinc-100/95 line-clamp-5 whitespace-pre-wrap break-words">
+            {userText ?? <span className="text-zinc-500">{noUserLabel}</span>}
+          </p>
+        </div>
+      </div>
+      <div className="mt-2.5 space-y-0 border-t border-[var(--border-hairline)]/80 pt-2.5">{children}</div>
+    </section>
+  );
+}
+
+function VirtualizedTraceBoundary({
+  traceId,
+  roundLabel,
+  snippet,
+  noUserLabel,
+}: {
+  traceId: string;
+  roundLabel: string;
+  snippet: string | null;
+  noUserLabel: string;
+}) {
+  return (
+    <div className="mb-2 border-t border-[var(--border-hairline)] pt-2 first:mt-0 first:border-t-0 first:pt-0">
+      <div className="flex min-w-0 items-baseline gap-2 text-[10px]">
+        <span className="shrink-0 font-semibold tracking-wide text-sky-300/90">{roundLabel}</span>
+        <span className="min-w-0 truncate text-zinc-500" title={snippet ?? traceId}>
+          {snippet?.trim() ? snippet : noUserLabel}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function estimateCardHeight(frame: AgentFrame): number {
@@ -211,14 +316,25 @@ function TraceCard({ frame, withMotion }: { frame: AgentFrame; withMotion: boole
 }
 
 export function ReasoningTrace(props: Props) {
-  const { frames } = props;
+  const { frames, turns } = props;
   const variant: "collapsible" | "embedded" = props.variant === "embedded" ? "embedded" : "collapsible";
   const { t } = useTranslations();
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [scrollTop, setScrollTop] = useState(0);
   const seenVirtualKeysRef = useRef<Set<string>>(new Set());
-  const displayFrames = useMemo(() => mergeStreamingFrames(frames), [frames]);
+  /** Omit RESPONSE: same text is shown in the main chat transcript. */
+  const displayFrames = useMemo(
+    () => mergeStreamingFrames(frames.filter((f) => f.type !== "RESPONSE")),
+    [frames],
+  );
+  const useTurnAnchors = Boolean(turns?.length);
+  const segments = useMemo(() => groupDisplayFramesByTraceId(displayFrames), [displayFrames]);
+  const traceRoundById = useMemo(() => {
+    const m = new Map<string, number>();
+    segments.forEach((s, i) => m.set(s.traceId, i + 1));
+    return m;
+  }, [segments]);
   const shouldVirtualize = displayFrames.length >= VIRTUALIZE_THRESHOLD_FRAMES;
   const viewportHeight = variant === "embedded" ? (scrollContainerRef.current?.clientHeight ?? 0) : COLLAPSIBLE_VIEWPORT_HEIGHT;
 
@@ -283,7 +399,37 @@ export function ReasoningTrace(props: Props) {
 
   const traceBody = (
     <>
-      {!shouldVirtualize ? (
+      {!shouldVirtualize && useTurnAnchors ? (
+        segments.length === 0 ? (
+          <div className="px-1 py-8 text-center text-[12px] leading-relaxed text-zinc-500">{t.labels.reasoningTraceEmpty}</div>
+        ) : (
+          <div>
+            {segments.map((seg, idx) => {
+              const userText = userTextForTrace(seg.traceId, turns);
+              const roundLabel = t.labels.reasoningTraceRound.replace("{n}", String(idx + 1));
+              const isLatest = idx === segments.length - 1;
+              return (
+                <TraceTurnAnchor
+                  key={seg.traceId}
+                  traceId={seg.traceId}
+                  roundLabel={roundLabel}
+                  userText={userText}
+                  noUserLabel={t.labels.reasoningTraceNoUserMatch}
+                  triggeredBy={t.labels.reasoningTraceTriggeredBy}
+                  latestLabel={t.labels.reasoningTraceLatest}
+                  isLatest={isLatest}
+                >
+                  <AnimatePresence initial={false}>
+                    {seg.frames.map((frame) => (
+                      <TraceCard key={getFrameKey(frame)} frame={frame} withMotion />
+                    ))}
+                  </AnimatePresence>
+                </TraceTurnAnchor>
+              );
+            })}
+          </div>
+        )
+      ) : !shouldVirtualize ? (
         <AnimatePresence initial={false}>
           {displayFrames.map((frame) => (
             <TraceCard key={getFrameKey(frame)} frame={frame} withMotion />
@@ -292,11 +438,34 @@ export function ReasoningTrace(props: Props) {
       ) : (
         <div>
           <div style={{ height: `${offsets.list[visibleRange.start] ?? 0}px` }} />
-          {displayFrames.slice(visibleRange.start, visibleRange.end).map((frame) => {
+          {displayFrames.slice(visibleRange.start, visibleRange.end).flatMap((frame, sliceIdx) => {
+            const i = visibleRange.start + sliceIdx;
+            const prevFrame =
+              i > visibleRange.start
+                ? displayFrames[i - 1]
+                : visibleRange.start > 0
+                  ? displayFrames[visibleRange.start - 1]
+                  : null;
+            const needDivider = Boolean(useTurnAnchors && turns?.length && prevFrame && frame.trace_id !== prevFrame.trace_id);
             const key = getFrameKey(frame);
             const isFirstVisible = !seenVirtualKeysRef.current.has(key);
             if (isFirstVisible) seenVirtualKeysRef.current.add(key);
-            return (
+            const round = traceRoundById.get(frame.trace_id) ?? 1;
+            const ut = userTextForTrace(frame.trace_id, turns);
+            const snippet = ut ? (ut.length > 100 ? `${ut.slice(0, 100)}…` : ut) : null;
+            const nodes: React.ReactNode[] = [];
+            if (needDivider) {
+              nodes.push(
+                <VirtualizedTraceBoundary
+                  key={`b-${frame.trace_id}-${i}`}
+                  traceId={frame.trace_id}
+                  roundLabel={t.labels.reasoningTraceRound.replace("{n}", String(round))}
+                  snippet={snippet}
+                  noUserLabel={t.labels.reasoningTraceNoUserMatch}
+                />,
+              );
+            }
+            nodes.push(
               <motion.div
                 key={key}
                 initial={isFirstVisible ? { opacity: 0.82 } : false}
@@ -304,8 +473,9 @@ export function ReasoningTrace(props: Props) {
                 transition={{ duration: VIRTUAL_FADE_IN_S, ease: "easeOut" }}
               >
                 <TraceCard frame={frame} withMotion={false} />
-              </motion.div>
+              </motion.div>,
             );
+            return nodes;
           })}
           <div
             style={{
